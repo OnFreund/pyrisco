@@ -1,1 +1,1 @@
-from .risco import RiscoAPI, UnauthorizedError
+from .risco import RiscoAPI, CannotConnectError, OperationError, UnauthorizedError

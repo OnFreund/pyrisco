@@ -171,16 +171,22 @@ class RiscoAPI:
                 else:
                     raise UnauthorizedError(json["errorText"])
 
+            if "result" in json and json["result"] != 0:
+                raise OperationError(f"result: {json['result']}")
+
             return json["response"]
 
     async def _login_user_pass(self):
         headers = {"Content-Type": "application/json"}
         body = {"userName": self._username, "password": self._password}
-        async with self._session.post(LOGIN_URL, headers=headers, json=body) as resp:
-            json = await resp.json()
-            if json["status"] == 401:
-                raise UnauthorizedError("Invalid username or password")
-            self._access_token = json["response"].get("accessToken")
+        try:
+            async with self._session.post(LOGIN_URL, headers=headers, json=body) as resp:
+                json = await resp.json()
+                if json["status"] == 401:
+                    raise UnauthorizedError("Invalid username or password")
+                self._access_token = json["response"].get("accessToken")
+        except aiohttp.client_exceptions.ClientConnectorError as e:
+            raise CannotConnectError() from e
 
         if not self._access_token:
             raise UnauthorizedError("Invalid username or password")
@@ -282,3 +288,9 @@ class RiscoAPI:
 
 class UnauthorizedError(Exception):
     """Exception to indicate an error in authorization."""
+
+class CannotConnectError(Exception):
+    """Exception to indicate an error in authorization."""
+
+class OperationError(Exception):
+    """Exception to indicate an error in operation."""
