@@ -152,10 +152,11 @@ class RiscoAPI:
         self._password = password
         self._pin = pin
         self._language = language
-        self._session = None
         self._access_token = None
         self._session_id = None
         self._site_id = None
+        self._session = None
+        self._created_session = False
 
     async def _authenticated_post(self, url, body, retry=True):
         headers = {
@@ -201,18 +202,25 @@ class RiscoAPI:
         resp = await self._authenticated_post(url, body, False)
         self._session_id = resp["sessionId"]
 
-    async def _init_session(self):
+    async def _init_session(self, session):
         await self.close()
-        self._session = aiohttp.ClientSession()
+        if self._session is None:
+            if session is None:
+                self._session = aiohttp.ClientSession()
+                self._created_session = True
+            else:
+                self._session = session
 
     async def close(self):
         """Close the connection."""
-        if self._session is not None:
+        if self._created_session == True and self._session is not None:
             await self._session.close()
+            self._session = None
+            self._created_session = False
 
-    async def login(self):
+    async def login(self, session=None):
         """Login to Risco Cloud."""
-        await self._init_session()
+        await self._init_session(session)
         await self._login_user_pass()
         await self._login_site()
         await self._login_session()
