@@ -1,7 +1,7 @@
 """Implementation of a Risco Cloud connection."""
 
 import aiohttp
-
+import asyncio
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
 SITE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/GetAll"
@@ -90,6 +90,11 @@ class Zone:
         """Is the zone triggered."""
         return self._raw["status"] == 1
 
+    @property
+    def bypassed(self):
+        """Is the zone triggered."""
+        return self._raw["status"] == 2
+
 
 class Alarm:
     """A representation of a Risco alarm system."""
@@ -104,14 +109,14 @@ class Alarm:
     def partitions(self):
         """Alarm partitions."""
         if self._partitions is None:
-            self._partitions = [Partition(p) for p in self._raw["partitions"]]
+            self._partitions = {p["id"]:Partition(p) for p in self._raw["partitions"]}
         return self._partitions
 
     @property
     def zones(self):
         """Alarm zones."""
         if self._zones is None:
-            self._zones = [Zone(z) for z in self._raw["zones"]]
+            self._zones = {z["zoneID"]:Zone(z) for z in self._raw["zones"]}
         return self._zones
 
 
@@ -155,27 +160,35 @@ class RiscoAPI:
         self._access_token = None
         self._session_id = None
         self._site_id = None
+        self._site_name = None
+        self._site_uuid = None
         self._session = None
         self._created_session = False
 
-    async def _authenticated_post(self, url, body, retry=True):
+    async def _authenticated_post(self, url, body):
         headers = {
             "Content-Type": "application/json",
             "authorization": "Bearer " + self._access_token,
         }
         async with self._session.post(url, headers=headers, json=body) as resp:
             json = await resp.json()
-            if json["status"] == 401:
-                if retry:
-                    await self.login()
-                    await self._authenticated_post(url, body, False)
-                else:
-                    raise UnauthorizedError(json["errorText"])
 
-            if "result" in json and json["result"] != 0:
-                raise OperationError(f"result: {json['result']}")
+        if json["status"] == 401:
+            raise UnauthorizedError(json["errorText"])
 
-            return json["response"]
+        if "result" in json and json["result"] != 0:
+            raise OperationError(str(json))
+
+        return json["response"]
+
+    async def _site_post(self, url, body):
+        site_url = url % self._site_id
+        site_body = {
+            **body,
+            "fromControlPanel": True,
+            "sessionToken": self._session_id
+        }
+        return await self._authenticated_post(site_url, site_body)
 
     async def _login_user_pass(self):
         headers = {"Content-Type": "application/json"}
@@ -187,19 +200,21 @@ class RiscoAPI:
                     raise UnauthorizedError("Invalid username or password")
                 self._access_token = json["response"].get("accessToken")
         except aiohttp.client_exceptions.ClientConnectorError as e:
-            raise CannotConnectError() from e
+            raise CannotConnectError from e
 
         if not self._access_token:
             raise UnauthorizedError("Invalid username or password")
 
     async def _login_site(self):
-        resp = await self._authenticated_post(SITE_URL, {}, False)
+        resp = await self._authenticated_post(SITE_URL, {})
         self._site_id = resp[0]["id"]
+        self._site_name = resp[0]["name"]
+        self._site_uuid = resp[0]["siteUUID"]
 
     async def _login_session(self):
         body = {"languageId": self._language, "pinCode": self._pin}
         url = PIN_URL % self._site_id
-        resp = await self._authenticated_post(url, body, False)
+        resp = await self._authenticated_post(url, body)
         self._session_id = resp["sessionId"]
 
     async def _init_session(self, session):
@@ -213,6 +228,7 @@ class RiscoAPI:
 
     async def close(self):
         """Close the connection."""
+        self._session_id = None
         if self._created_session == True and self._session is not None:
             await self._session.close()
             self._session = None
@@ -220,6 +236,9 @@ class RiscoAPI:
 
     async def login(self, session=None):
         """Login to Risco Cloud."""
+        if self._session_id:
+            return
+
         await self._init_session(session)
         await self._login_user_pass()
         await self._login_site()
@@ -227,71 +246,64 @@ class RiscoAPI:
 
     async def get_state(self):
         """Get partitions and zones."""
-        url = STATE_URL % self._site_id
-        body = {"fromControlPanel": True, "sessionToken": self._session_id}
-        resp = await self._authenticated_post(url, body)
+        resp = await self._site_post(STATE_URL, {})
         return Alarm(resp["state"]["status"])
 
     async def disarm(self, partition):
         """Disarm the alarm."""
-        url = CONTROL_URL % self._site_id
         body = {
             "partitions": [{"id": partition, "armedState": 1}],
-            "fromControlPanel": True,
-            "sessionToken": self._session_id,
         }
-        return Alarm(await self._authenticated_post(url, body))
+        return Alarm(await self._site_post(CONTROL_URL, body))
 
     async def arm(self, partition):
         """Arm the alarm."""
-        url = CONTROL_URL % self._site_id
         body = {
             "partitions": [{"id": partition, "armedState": 3}],
-            "fromControlPanel": True,
-            "sessionToken": self._session_id,
         }
-        return Alarm(await self._authenticated_post(url, body))
+        return Alarm(await self._site_post(CONTROL_URL, body))
 
     async def partial_arm(self, partition):
         """Partially-arm the alarm."""
-        url = CONTROL_URL % self._site_id
         body = {
             "partitions": [{"id": partition, "armedState": 2}],
-            "fromControlPanel": True,
-            "sessionToken": self._session_id,
         }
-        return Alarm(await self._authenticated_post(url, body))
+        return Alarm(await self._site_post(CONTROL_URL, body))
 
     async def group_arm(self, partition, group):
         """Arm a specific group."""
         if isinstance(group, str):
             group = GROUP_ID_TO_NAME.index(group)
 
-        url = CONTROL_URL % self._site_id
         body = {
             "partitions": [{"id": partition, "groups": [{"id": group, "state": 3}]}],
-            "fromControlPanel": True,
-            "sessionToken": self._session_id,
         }
-        return Alarm(await self._authenticated_post(url, body))
+        return Alarm(await self._site_post(CONTROL_URL, body))
 
     async def get_events(self, newer_than, count=10):
         """Get event log."""
-        url = EVENTS_URL % self._site_id
         body = {
             "count": count,
             "newerThan": newer_than,
             "offset": 0,
-            "fromControlPanel": True,
-            "sessionToken": self._session_id,
         }
-        response = await self._authenticated_post(url, body)
+        response = await self._site_post(EVENTS_URL, body)
         return [Event(e) for e in response["controlPanelEventsList"]]
 
     @property
     def site_id(self):
         """Site ID of the Alarm instance."""
         return self._site_id
+
+    @property
+    def site_name(self):
+        """Site name of the Alarm instance."""
+        return self._site_name
+
+    @property
+    def site_uuid(self):
+        """Site UUID of the Alarm instance."""
+        return self._site_uuid
 
 
 class UnauthorizedError(Exception):

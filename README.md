@@ -16,12 +16,18 @@ Python 3.7 and above are supported.
 ```python
 from pyrisco import RiscoAPI
 r = RiscoAPI("<username>", "<password>", "<pincode>")
+
+# you can also pass your own session to login. It will not be closed
 await r.login()
 alarm = await r.get_state()
-print (alarm.partitions[0].armed)
+print(alarm.partitions[0].armed)
 
 events = await r.get_events("2020-06-17T00:00:00Z", 10)
-print (events[0].name)
+print(events[0].name)
+
+print(alarm.zones[0].name)
+print(alarm.zones[0].triggered)
+print(alarm.zones[0].bypassed)
 
 # arm partition 0
 await r.arm(0)
