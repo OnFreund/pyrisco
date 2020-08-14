@@ -14,6 +14,8 @@ EVENTS_URL = (
 
 GROUP_ID_TO_NAME = ["A", "B", "C", "D"]
 
+NUM_RETRIES = 3
+
 
 class Partition:
     """A representation of a Risco partition."""
@@ -183,12 +185,19 @@ class RiscoAPI:
 
     async def _site_post(self, url, body):
         site_url = url % self._site_id
-        site_body = {
-            **body,
-            "fromControlPanel": True,
-            "sessionToken": self._session_id
-        }
-        return await self._authenticated_post(site_url, site_body)
+        for i in range(NUM_RETRIES):
+            try:
+                site_body = {
+                    **body,
+                    "fromControlPanel": True,
+                    "sessionToken": self._session_id
+                }
+                return await self._authenticated_post(site_url, site_body)
+            except UnauthorizedError:
+                if i + 1 == NUM_RETRIES:
+                    raise
+                await self.close()
+                await self.login()
 
     async def _login_user_pass(self):
         headers = {"Content-Type": "application/json"}
