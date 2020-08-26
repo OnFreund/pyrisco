@@ -11,6 +11,9 @@ CONTROL_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/P
 EVENTS_URL = (
     "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/GetEventLog"
 )
+BYPASS_URL = (
+    "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
+)
 
 GROUP_ID_TO_NAME = ["A", "B", "C", "D"]
 
@@ -298,6 +301,19 @@ class RiscoAPI:
         }
         response = await self._site_post(EVENTS_URL, body)
         return [Event(e) for e in response["controlPanelEventsList"]]
+
+    async def bypass_zone(self, partition, zone, bypass):
+        """Bypass or unbypass a zone."""
+        status = 2 if bypass else 3
+        body = {
+            "zones": [{
+                "trouble": 0,
+                "part": partition,
+                "ZoneID": zone,
+                "Status": status
+            }]
+        }
+        return Alarm(await self._site_post(BYPASS_URL, body))
 
     @property
     def site_id(self):
