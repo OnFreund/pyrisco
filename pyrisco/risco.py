@@ -302,14 +302,10 @@ class RiscoAPI:
         response = await self._site_post(EVENTS_URL, body)
         return [Event(e) for e in response["controlPanelEventsList"]]
 
-    async def bypass_zone(self, partition, zone, bypass):
+    async def bypass_zone(self, zone, bypass):
         """Bypass or unbypass a zone."""
         status = 2 if bypass else 3
-        body = {
-            "zones": [
-                {"trouble": 0, "part": partition, "ZoneID": zone, "Status": status}
-            ]
-        }
+        body = {"zones": [{"trouble": 0, "ZoneID": zone, "Status": status}]}
         return Alarm(await self._site_post(BYPASS_URL, body))
 
     @property
