@@ -11,9 +11,7 @@ CONTROL_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/P
 EVENTS_URL = (
     "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/GetEventLog"
 )
-BYPASS_URL = (
-    "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
-)
+BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
 
 GROUP_ID_TO_NAME = ["A", "B", "C", "D"]
 
@@ -114,14 +112,14 @@ class Alarm:
     def partitions(self):
         """Alarm partitions."""
         if self._partitions is None:
-            self._partitions = {p["id"]:Partition(p) for p in self._raw["partitions"]}
+            self._partitions = {p["id"]: Partition(p) for p in self._raw["partitions"]}
         return self._partitions
 
     @property
     def zones(self):
         """Alarm zones."""
         if self._zones is None:
-            self._zones = {z["zoneID"]:Zone(z) for z in self._raw["zones"]}
+            self._zones = {z["zoneID"]: Zone(z) for z in self._raw["zones"]}
         return self._zones
 
 
@@ -193,7 +191,7 @@ class RiscoAPI:
                 site_body = {
                     **body,
                     "fromControlPanel": True,
-                    "sessionToken": self._session_id
+                    "sessionToken": self._session_id,
                 }
                 return await self._authenticated_post(site_url, site_body)
             except UnauthorizedError:
@@ -206,7 +204,9 @@ class RiscoAPI:
         headers = {"Content-Type": "application/json"}
         body = {"userName": self._username, "password": self._password}
         try:
-            async with self._session.post(LOGIN_URL, headers=headers, json=body) as resp:
+            async with self._session.post(
+                LOGIN_URL, headers=headers, json=body
+            ) as resp:
                 json = await resp.json()
                 if json["status"] == 401:
                     raise UnauthorizedError("Invalid username or password")
@@ -306,12 +306,9 @@ class RiscoAPI:
         """Bypass or unbypass a zone."""
         status = 2 if bypass else 3
         body = {
-            "zones": [{
-                "trouble": 0,
-                "part": partition,
-                "ZoneID": zone,
-                "Status": status
-            }]
+            "zones": [
+                {"trouble": 0, "part": partition, "ZoneID": zone, "Status": status}
+            ]
         }
         return Alarm(await self._site_post(BYPASS_URL, body))
 
@@ -334,8 +331,10 @@ class RiscoAPI:
 class UnauthorizedError(Exception):
     """Exception to indicate an error in authorization."""
 
+
 class CannotConnectError(Exception):
     """Exception to indicate an error in authorization."""
+
 
 class OperationError(Exception):
     """Exception to indicate an error in operation."""
