@@ -1,6 +1,6 @@
 # PyRisco
 
-A python interface to Risco alarm systems through [Risco CLoud](https://riscocloud.com/ELAS/WebUI).
+A python interface to Risco alarm systems through [Risco Cloud](https://riscocloud.com/ELAS/WebUI).
 
 ## Installation
 
