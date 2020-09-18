@@ -80,6 +80,8 @@ class Partition:
     @property
     def groups(self):
         """Group arming status."""
+        if self._raw.get("groups") is None:
+            return {}
         return {GROUP_ID_TO_NAME[g["id"]]: g["state"] == 3 for g in self._raw["groups"]}
 
 
