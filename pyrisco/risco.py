@@ -249,8 +249,11 @@ class RiscoAPI:
         if json["status"] == 401:
             raise UnauthorizedError(json["errorText"])
 
-        if "result" in json and json["result"] != 0:
-            raise OperationError(str(json))
+        if "result" in json:
+            if json["result"] == 72:
+                raise MysteriousResultError(str(json))
+            elif json["result"] != 0:
+                raise OperationError(str(json))
 
         return json["response"]
 
@@ -264,6 +267,9 @@ class RiscoAPI:
                     "sessionToken": self._session_id,
                 }
                 return await self._authenticated_post(site_url, site_body)
+            except MysteriousResultError as e:
+                if i + 1 == NUM_RETRIES:
+                    raise OperationError(e) from e
             except UnauthorizedError:
                 if i + 1 == NUM_RETRIES:
                     raise
@@ -404,3 +410,7 @@ class CannotConnectError(Exception):
 
 class OperationError(Exception):
     """Exception to indicate an error in operation."""
+
+
+class MysteriousResultError(Exception):
+    """Exception to indicate an intermittent result of an unknown meaning."""
