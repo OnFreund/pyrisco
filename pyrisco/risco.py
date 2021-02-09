@@ -251,6 +251,10 @@ class RiscoAPI:
 
         if "result" in json:
             if json["result"] == 72:
+                # Occasionally an empty response is returned with this result code.
+                # We don't know what it means but from what we can see the next
+                # request is always successful. By raising this exception we let
+                # the caller know that the request should be retried.
                 raise TemporaryError(str(json))
             elif json["result"] != 0:
                 raise OperationError(str(json))
