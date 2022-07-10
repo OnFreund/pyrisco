@@ -19,13 +19,13 @@ class RiscoCrypt:
   def __init__(self, panel_id, encoding='utf-8'):
     self._pseudo_buffer = self._create_pseudo_buffer(panel_id)
     self._crc_decoded = list(map(int, base64.b64decode(CRC_ARRAY_BASE64).decode("utf-8")[1:-1].split(',')))
-    self._encrypted_panel = False
+    self.encrypted_panel = False
     self._encoding = encoding
 
   def encode(self, cmd_id, command, force_crypt=False):
     encrypted = bytearray()
     encrypted.append(2)
-    encrypt = force_crypt or self._encrypted_panel
+    encrypt = force_crypt or self.encrypted_panel
     if encrypt:
       encrypted.append(17)
 
@@ -38,9 +38,8 @@ class RiscoCrypt:
     encrypted.append(3)
     return encrypted;
 
-  def decode(self, message):
-    chars = bytearray(message, self._encoding)
-    self._encrypted_panel = _is_encrypted(chars)
+  def decode(self, chars):
+    self.encrypted_panel = _is_encrypted(chars)
     decrypted_chars = self._decrypt_chars(chars)
     decrypted = decrypted_chars.decode(self._encoding)
     raw_command = decrypted[0:decrypted.index('\x17')+1]
@@ -100,11 +99,11 @@ class RiscoCrypt:
 
   def _valid_crc(self, command, crc):
     if len(crc) != 4:
-      return false
+      return False
 
     for char in crc:
       if ord(char) > 127:
-        return false
+        return False
 
     computed = self._get_crc(command)
     return computed == crc
