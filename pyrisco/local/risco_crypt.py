@@ -4,9 +4,9 @@ CRC_ARRAY_BASE64 = 'WzAsNDkzNDUsNDk1MzcsMzIwLDQ5OTIxLDk2MCw2NDAsNDk3MjksNTA2ODks
 ENCRYPTION_FLAG_INDEX = 1
 ENCRYPTION_FLAG_VALUE = 17
 
-START = bytearray(chr(2), "utf-8")
-END = bytearray(chr(3), "utf-8")
-DLE = bytearray(chr(16), "utf-8")
+START = b'\x02'
+END = b'\x03'
+DLE = b'\x10'
 ESCAPED_START = DLE + START
 ESCAPED_END = DLE + END
 ESCAPED_DLE = DLE + DLE

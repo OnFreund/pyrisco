@@ -1,10 +1,12 @@
 import asyncio
-from .risco_crypt import RiscoCrypt
+from .risco_crypt import RiscoCrypt, ESCAPED_END, END
 from pyrisco.risco import UnauthorizedError, CannotConnectError, OperationError
+
+MIN_CMD_ID = 1
+MAX_CMD_ID = 49
 
 class RiscoSocket:
   def __init__(self, options):
-    self._timeout = 3
     self._panel_id = options['panel_id']
     self._encoding = options['encoding']
     self._host = options['host']
@@ -13,12 +15,14 @@ class RiscoSocket:
     self._code = options['code']
     self._reader = None
     self._writer = None
-    
+    self._listen_task = None
 
   async def connect(self):
     self._cmd_id = 0
+    self._futures = [None for i in range(MIN_CMD_ID,MIN_CMD_ID + MAX_CMD_ID)]
     self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
     self._crypt = RiscoCrypt(self._panel_id, self._encoding)
+    self._listen_task = asyncio.create_task(self._listen())
     try:
       command = f'RMT={self._code:0{self._code_length}d}'
       if not await self.send_ack_command(command):
@@ -41,51 +45,55 @@ class RiscoSocket:
       finally:
         await self._close()
 
-  async def send_ack_command(self, command, prog_cmd=False):
-    command = await self.send_command(command, prog_cmd)
+  async def _listen(self):
+    while True:
+      cmd_id, command, crc = await self._read_command()
+      if cmd_id <= MAX_CMD_ID:
+        future = self._futures[cmd_id-1]
+        self._futures[cmd_id-1] = None
+        if crc:
+          future.set_result(command)
+        elif command[0] in ['N', 'B']:
+          future.set_exception(OperationError(f'cmd_id: {cmd_id}, Risco error: {command}'))
+        else:
+          future.set_exception(OperationError(f'cmd_id: {cmd_id}, Wrong CRC'))
+      else:
+        self._handle_incoming(cmd_id, command, crc)
+
+
+  async def send_ack_command(self, command):
+    command = await self.send_command(command)
     return command == 'ACK'
 
-  async def send_command(self, command, prog_cmd=False, force_encryption=False):
-    # while (this.inProg && !progCmd) {
-    #   // if we are in programming mode, wait 5s before retry
-    #   logger.log('debug', `sendCommand: Waiting for programming mode to exit`);
-    #   await new Promise(r => setTimeout(r, 5000));
-    # }
-    # if (this.inProg && !progCmd) {
-    #   const message = `sendCommand: Programming mode did not exit after delay, rejecting command`;
-    #   logger.log('error', message);
-    #   throw new Error(message);
-    # }
+  async def send_result_command(self, command):
+    command = await self.send_command(command)
+    return command.split("=")[1]
 
-    # if (!cmdCtx) {
-    #   cmdCtx = this.allocateCmdCtx(commandStr);
-    # }
-    
-    # let responseTimeoutDelay: number;
-    # if (progCmd) {
-    #   responseTimeoutDelay = 29000;
-    # } else {
-    #   responseTimeoutDelay = 5000;
-    # }
-
+  async def send_command(self, command, force_encryption=False):
     self._advance_cmd_id()
-    buffer = self._crypt.encode(self._cmd_id, command, force_encryption);
-    self._writer.write(buffer);
-    cmd_id = 0
-    while cmd_id != self._cmd_id:
-      response = await asyncio.wait_for(self._reader.readuntil(b'\x03'), self._timeout)
-      while response.endswith(b'\x10\x03'):
-        response += await asyncio.wait_for(self._reader.readuntil(b'\x03'), self._timeout)
-      cmd_id, command, crc = self._crypt.decode(response)
-      if cmd_id != self._cmd_id:
-        print(self._crypt.decode(response))
+    self._write_command(self._cmd_id, command, force_encryption)
+    future = asyncio.Future()
+    self._futures[self._cmd_id-1] = future
+    return await future 
 
-    if not crc:
-      raise OperationError
+  def _handle_incoming(self, cmd_id, command, crc):
+    self._write_command(cmd_id, 'ACK')
 
-    return command
+  async def _read_command(self):
+    buffer = await self._reader.readuntil(END)
+    while buffer.endswith(ESCAPED_END):
+      buffer += await self._reader.readuntil(END)
+    return self._crypt.decode(buffer)
+
+  def _write_command(self, cmd_id, command, force_encryption=False):
+    buffer = self._crypt.encode(cmd_id, command, force_encryption)
+    self._writer.write(buffer)
 
   async def _close(self):
+    if self._listen_task:
+      self._listen_task.cancel()
+      self._listen_task = None
+
     self._writer.close()
     await self._writer.wait_closed()
     self._writer = None
@@ -93,5 +101,5 @@ class RiscoSocket:
 
   def _advance_cmd_id(self):
     self._cmd_id += 1
-    if self._cmd_id > 49:
-      self._cmd_id = 1
+    if self._cmd_id > MAX_CMD_ID:
+      self._cmd_id = MIN_CMD_ID
