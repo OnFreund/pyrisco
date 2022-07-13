@@ -16,13 +16,18 @@ class RiscoSocket:
     self._reader = None
     self._writer = None
     self._listen_task = None
+    self._keep_alive_task = None
+    self._max_concurrency = options['concurrency']
+    self._semaphore = None
 
   async def connect(self):
+    self._semaphore = asyncio.Semaphore(self._max_concurrency)
     self._cmd_id = 0
     self._futures = [None for i in range(MIN_CMD_ID,MIN_CMD_ID + MAX_CMD_ID)]
     self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
     self._crypt = RiscoCrypt(self._panel_id, self._encoding)
     self._listen_task = asyncio.create_task(self._listen())
+
     try:
       command = f'RMT={self._code:0{self._code_length}d}'
       if not await self.send_ack_command(command):
@@ -34,6 +39,7 @@ class RiscoSocket:
       self._crypt.encrypted_panel = True
       if not await self.send_ack_command('LCL'):
         raise UnauthorizedError
+      self._keep_alive_task = asyncio.create_task(self._keep_alive())
     except:
       await self._close()
       raise
@@ -41,7 +47,7 @@ class RiscoSocket:
   async def disconnect(self):
     if self._writer:
       try:
-        await self.send_command('DCN', False, False)
+        await self.send_ack_command('DCN')
       finally:
         await self._close()
 
@@ -51,15 +57,20 @@ class RiscoSocket:
       if cmd_id <= MAX_CMD_ID:
         future = self._futures[cmd_id-1]
         self._futures[cmd_id-1] = None
-        if crc:
-          future.set_result(command)
+        if not crc:
+          future.set_exception(OperationError(f'cmd_id: {cmd_id}, Wrong CRC'))
         elif command[0] in ['N', 'B']:
           future.set_exception(OperationError(f'cmd_id: {cmd_id}, Risco error: {command}'))
         else:
-          future.set_exception(OperationError(f'cmd_id: {cmd_id}, Wrong CRC'))
+          future.set_result(command)
       else:
         self._handle_incoming(cmd_id, command, crc)
 
+
+  async def _keep_alive(self):
+    while True:
+      await self.send_result_command("CLOCK")
+      await asyncio.sleep(5)
 
   async def send_ack_command(self, command):
     command = await self.send_command(command)
@@ -70,13 +81,15 @@ class RiscoSocket:
     return command.split("=")[1]
 
   async def send_command(self, command, force_encryption=False):
-    self._advance_cmd_id()
-    self._write_command(self._cmd_id, command, force_encryption)
-    future = asyncio.Future()
-    self._futures[self._cmd_id-1] = future
-    return await future 
+    async with self._semaphore:
+      self._advance_cmd_id()
+      self._write_command(self._cmd_id, command, force_encryption)
+      future = asyncio.Future()
+      self._futures[self._cmd_id-1] = future
+      return await future
 
   def _handle_incoming(self, cmd_id, command, crc):
+    print(f'ID: {cmd_id}, command: {command}, crc: {crc}')
     self._write_command(cmd_id, 'ACK')
 
   async def _read_command(self):
@@ -90,6 +103,10 @@ class RiscoSocket:
     self._writer.write(buffer)
 
   async def _close(self):
+    if self._keep_alive_task:
+      self._keep_alive_task.cancel()
+      self._keep_alive_task = None
+
     if self._listen_task:
       self._listen_task.cancel()
       self._listen_task = None
@@ -98,6 +115,7 @@ class RiscoSocket:
     await self._writer.wait_closed()
     self._writer = None
     self._reader = None
+    self._semaphore = None
 
   def _advance_cmd_id(self):
     self._cmd_id += 1
