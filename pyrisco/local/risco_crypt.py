@@ -16,11 +16,14 @@ def _is_encrypted(message):
 
 
 class RiscoCrypt:
-  def __init__(self, panel_id, encoding='utf-8'):
-    self._pseudo_buffer = self._create_pseudo_buffer(panel_id)
+  def __init__(self, encoding='utf-8'):
+    self._pseudo_buffer = None
     self._crc_decoded = list(map(int, base64.b64decode(CRC_ARRAY_BASE64).decode("utf-8")[1:-1].split(',')))
     self.encrypted_panel = False
     self._encoding = encoding
+
+  def set_panel_id(self, panel_id):
+    self._pseudo_buffer = RiscoCrypt._create_pseudo_buffer(panel_id)
 
   def encode(self, cmd_id, command, force_crypt=False):
     encrypted = bytearray()
@@ -80,7 +83,7 @@ class RiscoCrypt:
   def _encrypt_decrypt_char(self, char, position):
     return char ^ self._pseudo_buffer[position]
 
-  def _create_pseudo_buffer(self, panel_id):
+  def _create_pseudo_buffer(panel_id):
     buffer_length = 255
     pseudo_buffer = bytearray(buffer_length)
     if panel_id == 0:
