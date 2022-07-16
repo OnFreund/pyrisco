@@ -1,23 +1,22 @@
 import asyncio
 from .risco_crypt import RiscoCrypt, ESCAPED_END, END
-from pyrisco.risco import UnauthorizedError, CannotConnectError, OperationError
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError
 
 MIN_CMD_ID = 1
 MAX_CMD_ID = 49
 
 class RiscoSocket:
-  def __init__(self, options):
-    self._encoding = options['encoding']
-    self._host = options['host']
-    self._port = options['port']
-    self._code_length = options['code_length']
-    self._code = options['code']
+  def __init__(self, host, port, code, **kwargs):
+    self._host = host
+    self._port = port
+    self._code = code
+    self._encoding = kwargs.get('encoding', 'utf-8')
+    self._max_concurrency = kwargs.get('concurrency', 4)
     self._reader = None
     self._writer = None
     self._crypt = None
     self._listen_task = None
     self._keep_alive_task = None
-    self._max_concurrency = options['concurrency']
     self._semaphore = None
     self._queue = None
 
@@ -38,7 +37,7 @@ class RiscoSocket:
       self._crypt.set_panel_id(panel_id)
       if not await self.send_ack_command('LCL'):
         raise CannotConnectError
-      command = f'RMT={self._code:0{self._code_length}d}'
+      command = f'RMT={self._code}'
       if not await self.send_ack_command(command):
         raise UnauthorizedError
 

@@ -3,6 +3,9 @@
 import aiohttp
 import asyncio
 
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, GROUP_ID_TO_NAME
+
+
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
 SITE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/GetAll"
 PIN_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/Login"
@@ -12,8 +15,6 @@ EVENTS_URL = (
     "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/GetEventLog"
 )
 BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
-
-GROUP_ID_TO_NAME = ["A", "B", "C", "D"]
 
 NUM_RETRIES = 3
 
@@ -392,15 +393,3 @@ class RiscoAPI:
     def site_uuid(self):
         """Site UUID of the Alarm instance."""
         return self._site_uuid
-
-
-class UnauthorizedError(Exception):
-    """Exception to indicate an error in authorization."""
-
-
-class CannotConnectError(Exception):
-    """Exception to indicate an error in authorization."""
-
-
-class OperationError(Exception):
-    """Exception to indicate an error in operation."""

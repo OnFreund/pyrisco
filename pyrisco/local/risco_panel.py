@@ -1,120 +1,16 @@
 import asyncio
+import copy
 from .const import PANEL_TYPE, PANEL_MODEL, PANEL_FW, MAX_ZONES, MAX_PARTS, MAX_OUTPUTS
 from .panels import panel_capabilities
+from .partition import Partition
+from .zone import Zone
 from .risco_socket import RiscoSocket
-from pyrisco.risco import OperationError, GROUP_ID_TO_NAME
-
-class Partition:
-  """A representation of a Risco partition."""
-
-  def __init__(self, partition_id, label, status):
-      """Read partition from response."""
-      self._id = partition_id
-      self._status = status
-      self._name = label.strip()
-
-  def update_status(self, status):
-    self._status = status
-
-  @property
-  def id(self):
-      """Partition ID number."""
-      return self._id
-
-  @property
-  def name(self):
-      """Partition name."""
-      return self._name
-
-  @property
-  def disarmed(self):
-      """Is the partition disarmed."""
-      return not (self.armed or self.partially_armed)
-
-  @property
-  def partially_armed(self):
-      """Is the partition partially-armed."""
-      return 'H' in self._status
-
-  @property
-  def armed(self):
-      """Is the partition armed."""
-      return 'A' in self._status
-
-  @property
-  def triggered(self):
-      """Is the partition triggered."""
-      return 'a' in self._status
-
-  @property
-  def ready(self):
-      """Is the partition ready."""
-      return 'R' in self._status
-
-  @property
-  def arming(self):
-      """Is the partition arming."""
-      return self.disarmed and not self.ready
-
-  @property
-  def groups(self):
-      """Group arming status."""
-      return {GROUP_ID_TO_NAME[g]: (str(g+1) in self._status) for g in range(0,4)}
-
-
-class Zone:
-  def __init__(self, zone_id, status, zone_type, label, partitions, groups, tech):
-    self._id = zone_id
-    self._status = status
-    self._type = int(zone_type)
-    self._name = label.strip()
-    self._partitions = partitions
-    self._groups = int(groups, 16)
-    self._tech = tech
-
-  def update_status(self, status):
-    self._status = status
-
-  @property
-  def id(self):
-      """Zone ID number."""
-      return self._id
-
-  @property
-  def name(self):
-      """Zone name."""
-      return self._name
-
-  @property
-  def type(self):
-      """Zone type."""
-      return self._type
-
-  @property
-  def triggered(self):
-      """Is the zone triggered."""
-      return 'O' in self._status
-
-  @property
-  def bypassed(self):
-      """Is the zone bypassed."""
-      return 'Y' in self._status
-
-  @property
-  def groups(self):
-      """Groups the zone belongs to."""
-      return [GROUP_ID_TO_NAME[i] for i in range(0,4) if ((2**i) & self._groups) > 0]
-
-  @property
-  def partitions(self):
-      """partitions the zone belongs to."""
-      ps = zip([int(p, 16) for p in self._partitions], range(0, len(self._partitions)))
-      return [i*4 + p + 1 for c, i in ps for p in range(0,4) if ((2**p) & c) > 0]
+from pyrisco.common import OperationError, GROUP_ID_TO_NAME
 
 
 class RiscoPanel:
-  def __init__(self, options):
-    self._rs = RiscoSocket(options)
+  def __init__(self, host, port, code, **kwargs):
+    self._rs = RiscoSocket(host, port, code, **kwargs)
     self._panel_capabilities = None
     self._listen_task = None
     self._zone_handlers = []
@@ -150,7 +46,7 @@ class RiscoPanel:
   def add_zone_handler(self, handler):
     return RiscoPanel._add_handler(self._zone_handlers, handler)
 
-  def add_zone_handler(self, handler):
+  def add_partition_handler(self, handler):
     return RiscoPanel._add_handler(self._partition_handlers, handler)
 
   def add_default_handler(self, handler):
@@ -169,19 +65,19 @@ class RiscoPanel:
     return self._partitions
 
   async def disarm(self, partition_id):
-    """Disarm the alarm."""
+    """Disarm a partition."""
     return await self._rs.send_ack_command(f'DISARM={partition_id}')
 
   async def arm(self, partition_id):
-    """Arm the alarm."""
+    """Arm a partition."""
     return await self._rs.send_ack_command(f'ARM={partition_id}')
 
   async def partial_arm(self, partition_id):
-      """Partially-arm the alarm."""
-      return await self._rs.send_ack_command(f'STAY={partition_id}')
+    """Partially-arm a partition."""
+    return await self._rs.send_ack_command(f'STAY={partition_id}')
 
   async def group_arm(self, partition_id, group):
-    """Arm a specific group."""
+    """Arm a specific group on a partition."""
     if isinstance(group, str):
         group = GROUP_ID_TO_NAME.index(group) + 1
 
@@ -205,10 +101,10 @@ class RiscoPanel:
       await self._rs.send_ack_command(F'ZBYPAS={zone_id}')
 
   def _add_handler(handlers, handler):
-    handlers.add(handler)
+    handlers.append(handler)
     def _remove():
       handlers.remove(handler)
-    return remove
+    return _remove
 
   async def _init_partitions(self):
     return await self._get_objects(1, self._panel_capabilities[MAX_PARTS], self._create_partition)
@@ -230,7 +126,7 @@ class RiscoPanel:
       label = await self._rs.send_result_command(f'PLBL{partition_id}?')
     except OperationError:
       return None
-    return Partition(partition_id, label, status)
+    return Partition(self, partition_id, label, status)
 
   async def _create_zone(self, zone_id):
     try:
@@ -246,37 +142,34 @@ class RiscoPanel:
       label = await self._rs.send_result_command(f'ZLBL*{zone_id}?')
       partitions = await self._rs.send_result_command(f'ZPART&*{zone_id}?')
       groups = await self._rs.send_result_command(f'ZAREA&*{zone_id}?')
-      return Zone(zone_id, status, zone_type, label, partitions, groups, tech)
+      return Zone(self, zone_id, status, zone_type, label, partitions, groups, tech)
     except OperationError:
       return None
 
   def _zone_status(self, zone_id, status):
-    print(f'Zone update {zone_id}: {status}')
     z = self._zones[zone_id]
     z.update_status(status)
-    RiscoPanel._call_handlers(self._zone_handlers, zone_id, z)
+    RiscoPanel._call_handlers(self._zone_handlers, zone_id, copy.copy(z))
 
   def _partition_status(self, partition_id, status):
-    print(f'Partition update {partition_id}: {status}')
     p = self._partitions[partition_id]
     p.update_status(status)
-    RiscoPanel._call_handlers(self._partition_handlers, partition_id, p)
+    RiscoPanel._call_handlers(self._partition_handlers, partition_id, copy.copy(p))
 
   def _default(self, command, result, *params):
-    print(f'Default: {command}, {result}, {params}')
     RiscoPanel._call_handlers(self._default_handlers, command, result, *params)
 
   def _event(self, event):
-    print(f'Event: {event}')
     RiscoPanel._call_handlers(self._event_handlers, event)
 
   def _error(self, error):
-    print(f'Error: {error}')
     RiscoPanel._call_handlers(self._error_handlers, error)
 
   def _call_handlers(handlers, *params):
     if len(handlers) > 0:
-      asyncio.create_task(asyncio.gather(*[h(*params) for h in handlers]))
+      async def _gather():
+        await asyncio.gather(*[h(*params) for h in handlers])
+      asyncio.create_task(_gather())
 
   async def _listen(self, queue):
     while True:
