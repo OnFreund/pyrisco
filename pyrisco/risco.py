@@ -1,5 +1,5 @@
-from pyrisco.local.risco_panel import RiscoPanel
-from pyrisco.cloud.risco_api import RiscoAPI
+from pyrisco.local import RiscoPanel
+from pyrisco.cloud import RiscoAPI
 
 
 def get_risco_cloud(username, password, pin, language="en"):

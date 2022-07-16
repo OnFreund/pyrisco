@@ -52,7 +52,7 @@ await r.close()
 ### Local
 ```python
 from pyrisco import get_risco_local
-r = get_risco_local("<host>", "<port>", "<pincode>")
+r = get_risco_local("<host>", <port>, "<pincode>")
 
 await r.connect()
 
