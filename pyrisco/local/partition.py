@@ -1,8 +1,6 @@
-from pyrisco.common import GROUP_ID_TO_NAME
+from pyrisco.common import GROUP_ID_TO_NAME, Partition as BasePartition
 
-class Partition:
-  """A representation of a Risco partition."""
-
+class Partition(BasePartition):
   def __init__(self, panel, partition_id, label, status):
       """Read partition from response."""
       self._panel = panel

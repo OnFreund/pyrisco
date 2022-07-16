@@ -1,6 +1,6 @@
-from pyrisco.common import GROUP_ID_TO_NAME
+from pyrisco.common import GROUP_ID_TO_NAME, Zone as BaseZone
 
-class Zone:
+class Zone(BaseZone):
   def __init__(self, panel, zone_id, status, zone_type, label, partitions, groups, tech):
     self._panel = panel
     self._id = zone_id
