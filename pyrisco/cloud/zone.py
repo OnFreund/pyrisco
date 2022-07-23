@@ -33,5 +33,5 @@ class Zone(BaseZone):
 
   @property
   def bypassed(self):
-    """Is the zone triggered."""
+    """Is the zone bypassed."""
     return self._raw["status"] == 2

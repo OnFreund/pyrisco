@@ -5,7 +5,7 @@ class Zone(BaseZone):
     self._panel = panel
     self._id = zone_id
     self._status = status
-    self._type = int(zone_type)
+    self._type = zone_type
     self._name = label.strip()
     self._partitions = partitions
     self._groups = int(groups, 16)
@@ -34,6 +34,11 @@ class Zone(BaseZone):
   def triggered(self):
       """Is the zone triggered."""
       return 'O' in self._status
+
+  @property
+  def alarmed(self):
+      """Is the zone causing an alarm."""
+      return 'a' in self._status
 
   @property
   def bypassed(self):

@@ -130,15 +130,18 @@ class RiscoPanel:
 
   async def _create_zone(self, zone_id):
     try:
-      status = await self._rs.send_result_command(f'ZSTT*{zone_id}?')
-      if status.endswith('N'):
+      zone_type = int(await self._rs.send_result_command(f'ZTYPE*{zone_id}?'))
+      if zone_type == 0:
         return None
 
       tech = await self._rs.send_result_command(f'ZLNKTYP{zone_id}?')
       if tech.strip() == 'N':
         return None
 
-      zone_type = await self._rs.send_result_command(f'ZTYPE*{zone_id}?')
+      status = await self._rs.send_result_command(f'ZSTT*{zone_id}?')
+      if status.endswith('N'):
+        return None
+
       label = await self._rs.send_result_command(f'ZLBL*{zone_id}?')
       partitions = await self._rs.send_result_command(f'ZPART&*{zone_id}?')
       groups = await self._rs.send_result_command(f'ZAREA&*{zone_id}?')
