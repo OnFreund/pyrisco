@@ -1,1 +1,1 @@
-from .risco_panel import RiscoPanel
+from .risco_local import RiscoLocal

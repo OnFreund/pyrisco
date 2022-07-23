@@ -21,7 +21,7 @@ BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/Se
 NUM_RETRIES = 3
 
 
-class RiscoAPI:
+class RiscoCloud:
   """A connection to a Risco alarm system."""
 
   def __init__(self, username, password, pin, language="en"):

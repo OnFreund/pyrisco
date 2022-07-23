@@ -15,8 +15,8 @@ Python 3.7 and above are supported.
 
 ### Cloud
 ```python
-from pyrisco import get_risco_cloud
-r = get_risco_cloud("<username>", "<password>", "<pincode>")
+from pyrisco import RiscoCloud
+r = RiscoCloud("<username>", "<password>", "<pincode>")
 
 # you can also pass your own session to login. It will not be closed
 await r.login()
@@ -51,8 +51,8 @@ await r.close()
 
 ### Local
 ```python
-from pyrisco import get_risco_local
-r = get_risco_local("<host>", <port>, "<pincode>")
+from pyrisco import RiscoLocal
+r = RiscoLocal("<host>", <port>, "<pincode>")
 
 await r.connect()
 

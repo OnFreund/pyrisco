@@ -8,7 +8,7 @@ from .risco_socket import RiscoSocket
 from pyrisco.common import OperationError, GROUP_ID_TO_NAME
 
 
-class RiscoPanel:
+class RiscoLocal:
   def __init__(self, host, port, code, **kwargs):
     self._rs = RiscoSocket(host, port, code, **kwargs)
     self._panel_capabilities = None
@@ -38,19 +38,19 @@ class RiscoPanel:
     self._listen_task = None
 
   def add_error_handler(self, handler):
-    return RiscoPanel._add_handler(self._error_handlers, handler)
+    return RiscoLocal._add_handler(self._error_handlers, handler)
 
   def add_event_handler(self, handler):
-    return RiscoPanel._add_handler(self._event_handlers, handler)
+    return RiscoLocal._add_handler(self._event_handlers, handler)
 
   def add_zone_handler(self, handler):
-    return RiscoPanel._add_handler(self._zone_handlers, handler)
+    return RiscoLocal._add_handler(self._zone_handlers, handler)
 
   def add_partition_handler(self, handler):
-    return RiscoPanel._add_handler(self._partition_handlers, handler)
+    return RiscoLocal._add_handler(self._partition_handlers, handler)
 
   def add_default_handler(self, handler):
-    return RiscoPanel._add_handler(self._default_handlers, handler)
+    return RiscoLocal._add_handler(self._default_handlers, handler)
 
   @property
   def id(self):
@@ -82,18 +82,6 @@ class RiscoPanel:
         group = GROUP_ID_TO_NAME.index(group) + 1
 
     return await self._rs.send_ack_command(f'GARM*{group}={partition_id}')
-
-  # async def get_events(self, newer_than, count=10):
-  #   """Get event log."""
-  #   await rp._rs.send_ack_command("TLOG=15/07/2022 18:00")
-  #   await rp._rs.send_ack_command("QLOG=10")
-  #   body = {
-  #       "count": count,
-  #       "newerThan": newer_than,
-  #       "offset": 0,
-  #   }
-  #   response = await self._site_post(EVENTS_URL, body)
-  #   return [Event(e) for e in response["controlPanelEventsList"]]
 
   async def bypass_zone(self, zone_id, bypass):
     """Bypass or unbypass a zone."""
@@ -152,21 +140,21 @@ class RiscoPanel:
   def _zone_status(self, zone_id, status):
     z = self._zones[zone_id]
     z.update_status(status)
-    RiscoPanel._call_handlers(self._zone_handlers, zone_id, copy.copy(z))
+    RiscoLocal._call_handlers(self._zone_handlers, zone_id, copy.copy(z))
 
   def _partition_status(self, partition_id, status):
     p = self._partitions[partition_id]
     p.update_status(status)
-    RiscoPanel._call_handlers(self._partition_handlers, partition_id, copy.copy(p))
+    RiscoLocal._call_handlers(self._partition_handlers, partition_id, copy.copy(p))
 
   def _default(self, command, result, *params):
-    RiscoPanel._call_handlers(self._default_handlers, command, result, *params)
+    RiscoLocal._call_handlers(self._default_handlers, command, result, *params)
 
   def _event(self, event):
-    RiscoPanel._call_handlers(self._event_handlers, event)
+    RiscoLocal._call_handlers(self._event_handlers, event)
 
   def _error(self, error):
-    RiscoPanel._call_handlers(self._error_handlers, error)
+    RiscoLocal._call_handlers(self._error_handlers, error)
 
   def _call_handlers(handlers, *params):
     if len(handlers) > 0:
