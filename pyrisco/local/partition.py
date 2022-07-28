@@ -62,7 +62,8 @@ class Partition(BasePartition):
   @property
   def arming(self):
       """Is the partition arming."""
-      return self.disarmed and not self.ready
+      # return self.disarmed and not self.ready
+      return False
 
   @property
   def groups(self):

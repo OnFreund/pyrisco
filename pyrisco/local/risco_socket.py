@@ -42,9 +42,9 @@ class RiscoSocket:
         raise UnauthorizedError
 
       self._keep_alive_task = asyncio.create_task(self._keep_alive())
-    except:
+    except Exception as exc:
       await self._close()
-      raise
+      raise CannotConnectError from exc
 
   async def disconnect(self):
     if self._writer:
@@ -116,8 +116,9 @@ class RiscoSocket:
       self._listen_task.cancel()
       self._listen_task = None
 
-    self._writer.close()
-    await self._writer.wait_closed()
+    if self._writer:
+      self._writer.close()
+      await self._writer.wait_closed()
     self._crypt = None
     self._writer = None
     self._reader = None
