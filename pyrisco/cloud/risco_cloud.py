@@ -147,8 +147,7 @@ class RiscoCloud:
     body = {
       "partitions": [{"id": partition, "armedState": 3}],
     }
-    await self._site_post(CONTROL_URL, body)
-    return Alarm(self, resp)
+    return await self._send_control_command(body)
 
   async def partial_arm(self, partition):
     """Partially-arm the alarm."""
