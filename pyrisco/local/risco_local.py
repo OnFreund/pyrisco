@@ -27,7 +27,7 @@ class RiscoLocal:
     panel_type = await self._rs.send_result_command("PNLCNF")
     firmware = await self._rs.send_result_command("FSVER?")
     self._panel_capabilities = panel_capabilities(panel_type, firmware)
-    self._id = int(await self._rs.send_result_command("PNLSERD"))
+    self._id = await self._rs.send_result_command("PNLSERD")
     self._zones = await self._init_zones()
     self._partitions = await self._init_partitions()
     self._listen_task = asyncio.create_task(self._listen(self._rs.queue))
