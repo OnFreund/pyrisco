@@ -18,7 +18,7 @@ URL = 'https://github.com/OnFreund/PyRisco'
 EMAIL = 'onfreund@gmail.com'
 AUTHOR = 'On Freund'
 REQUIRES_PYTHON = '>=3.7.0'
-VERSION = '0.5.2'
+VERSION = '0.5.3'
 
 REQUIRED = ['aiohttp']
 
