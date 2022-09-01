@@ -124,6 +124,9 @@ class RiscoSocket:
     self._reader = None
     self._semaphore = None
     self._queue = None
+    # Risco needs a few seconds to reset its encryption state before accepting a new connection
+    # If we don't sleep here, the next connection will be encrypted before we get the panel id.
+    await asyncio.sleep(5)
 
   def _advance_cmd_id(self):
     self._cmd_id += 1
