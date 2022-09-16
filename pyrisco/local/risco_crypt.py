@@ -49,12 +49,12 @@ class RiscoCrypt:
     command, crc = decrypted.split('\x17')
 
     if command[0] in ['N','B']:
-      cmd_id = null
+      cmd_id = None
       command_string = command
     else:
       cmd_id = int(command[:2])
       command_string = command[2:]
-    
+
     return [cmd_id, command_string, self._valid_crc(raw_command, crc)]
 
   def _encrypt_chars(self, chars, encrypt):
@@ -64,7 +64,7 @@ class RiscoCrypt:
     chars = chars.replace(DLE, ESCAPED_DLE)
     chars = chars.replace(START, ESCAPED_START)
     chars = chars.replace(END, ESCAPED_END)
-      
+
     return chars
 
   def _decrypt_chars(self, chars):
@@ -74,7 +74,7 @@ class RiscoCrypt:
     escaped = escaped.replace(ESCAPED_DLE, DLE)
     escaped = escaped.replace(ESCAPED_START, START)
     escaped = escaped.replace(ESCAPED_END, END)
-    
+
     if decrypt:
       return bytes(map(self._encrypt_decrypt_char, escaped, range(len(escaped))))
     else:

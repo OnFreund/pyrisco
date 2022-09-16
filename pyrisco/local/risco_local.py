@@ -164,24 +164,27 @@ class RiscoLocal:
 
   async def _listen(self, queue):
     while True:
-      item = await queue.get()
-      if isinstance(item, Exception):
-        self._error(item)
-        continue
+      try:
+        item = await queue.get()
+        if isinstance(item, Exception):
+          self._error(item)
+          continue
 
-      if item.startswith('CLOCK'):
-        # safe to ignore these
-        continue
+        if item.startswith('CLOCK'):
+          # safe to ignore these
+          continue
 
-      if item.startswith("EVENT="):
-        self._event(item[6:])
-        continue
+        if item.startswith("EVENT="):
+          self._event(item[6:])
+          continue
 
-      command, result, *params = item.split("=")
+        command, result, *params = item.split("=")
 
-      if command.startswith('ZSTT'):
-        self._zone_status(int(command[4:]), result)
-      elif command.startswith('PSTT'):
-        self._partition_status(int(command[4:]), result)
-      else:
-        self._default(command, result, *params)
+        if command.startswith('ZSTT'):
+          self._zone_status(int(command[4:]), result)
+        elif command.startswith('PSTT'):
+          self._partition_status(int(command[4:]), result)
+        else:
+          self._default(command, result, *params)
+      except Exception as error:
+        self._error(error)
