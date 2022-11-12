@@ -41,6 +41,11 @@ class Zone(BaseZone):
       return 'a' in self._status
 
   @property
+  def armed(self):
+      """Is the zone armed."""
+      return 'A' in self._status
+
+  @property
   def bypassed(self):
       """Is the zone bypassed."""
       return 'Y' in self._status
