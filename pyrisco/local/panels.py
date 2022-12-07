@@ -47,7 +47,7 @@ def _rw432_capabilities(firmware):
     MAX_OUTPUTS: max_outputs,
   }
 
-def _rw432mp_capabilities(firmware):
+def _rp432mp_capabilities(firmware):
   max_zones = 512
   max_outputs = 32
 
@@ -81,7 +81,7 @@ PANELS = {
   'RW232': _rw232_capabilities,
   'RW332': _rw332_capabilities,
   'RP432': _rw432_capabilities,
-  'RP432MP': _rw432mp_capabilities,
+  'RP432MP': _rp432mp_capabilities,
   'RP512': _rw512_capabilities
 }
 
