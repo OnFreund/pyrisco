@@ -48,14 +48,11 @@ def _rw432_capabilities(firmware):
   }
 
 def _rp432mp_capabilities(firmware):
-  max_zones = 512
-  max_outputs = 32
-
   return {
     PANEL_MODEL: 'LightSys+',
-    MAX_ZONES: max_zones,
+    MAX_ZONES: 512,
     MAX_PARTS: 32,
-    MAX_OUTPUTS: max_outputs,
+    MAX_OUTPUTS: 196,
   }
 
 
