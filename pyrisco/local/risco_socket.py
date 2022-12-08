@@ -33,7 +33,7 @@ class RiscoSocket:
       self._queue = asyncio.Queue()
       self._listen_task = asyncio.create_task(self._listen())
       self._crypt = RiscoCrypt(self._encoding)
-      panel_id = int(await self.send_result_command('RID'))
+      panel_id = int(await self.send_result_command('RID'), 16)
       self._crypt.set_panel_id(panel_id)
       if not await self.send_ack_command('LCL'):
         raise CannotConnectError

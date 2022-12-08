@@ -47,6 +47,15 @@ def _rw432_capabilities(firmware):
     MAX_OUTPUTS: max_outputs,
   }
 
+def _rp432mp_capabilities(firmware):
+  return {
+    PANEL_MODEL: 'LightSys+',
+    MAX_ZONES: 512,
+    MAX_PARTS: 32,
+    MAX_OUTPUTS: 196,
+  }
+
+
 def _rw512_capabilities(firmware):
   max_zones = 64
   parts = list(map(int, firmware.split('.')))
@@ -69,6 +78,7 @@ PANELS = {
   'RW232': _rw232_capabilities,
   'RW332': _rw332_capabilities,
   'RP432': _rw432_capabilities,
+  'RP432MP': _rp432mp_capabilities,
   'RP512': _rw512_capabilities
 }
 
