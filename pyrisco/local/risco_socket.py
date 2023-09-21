@@ -12,6 +12,7 @@ class RiscoSocket:
     self._code = code
     self._encoding = kwargs.get('encoding', 'utf-8')
     self._max_concurrency = kwargs.get('concurrency', 4)
+    self._communication_delay = kwargs.get('communication_delay', 0)
     self._reader = None
     self._writer = None
     self._crypt = None
@@ -28,8 +29,9 @@ class RiscoSocket:
     self._cmd_id = 0
     try:
       self._semaphore = asyncio.Semaphore(self._max_concurrency)
-      self._futures = [None for i in range(MIN_CMD_ID,MIN_CMD_ID + MAX_CMD_ID)]
+      self._futures = [None for i in range(MIN_CMD_ID, MIN_CMD_ID + MAX_CMD_ID)]
       self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
+      await asyncio.sleep(self._communication_delay)
       self._queue = asyncio.Queue()
       self._listen_task = asyncio.create_task(self._listen())
       self._crypt = RiscoCrypt(self._encoding)
