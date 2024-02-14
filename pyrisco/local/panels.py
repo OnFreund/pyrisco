@@ -32,7 +32,7 @@ def _rw332_capabilities(firmware):
     MAX_OUTPUTS: 4,
   }
 
-def _rw432_capabilities(firmware):
+def _rp432_capabilities(firmware):
   max_zones = 32
   max_outputs = 14
   parts = firmware.split('.')
@@ -56,7 +56,7 @@ def _rp432mp_capabilities(firmware):
   }
 
 
-def _rw512_capabilities(firmware):
+def _rp512_capabilities(firmware):
   max_zones = 64
   parts = list(map(int, firmware.split('.')))
   if ((parts[0] > 1) or
@@ -77,9 +77,9 @@ PANELS = {
   'RW132': _rw132_capabilities,
   'RW232': _rw232_capabilities,
   'RW332': _rw332_capabilities,
-  'RP432': _rw432_capabilities,
+  'RP432': _rp432_capabilities,
   'RP432MP': _rp432mp_capabilities,
-  'RP512': _rw512_capabilities
+  'RP512': _rp512_capabilities
 }
 
 def panel_capabilities(panel_type, firmware):

@@ -25,7 +25,10 @@ class RiscoLocal:
   async def connect(self):
     await self._rs.connect()
     panel_type = await self._rs.send_result_command("PNLCNF")
-    firmware = await self._rs.send_result_command("FSVER?")
+    if panel_type.startswith("RP"):
+      firmware = await self._rs.send_result_command("FSVER?")
+    else:
+      firmware = ""
     self._panel_capabilities = panel_capabilities(panel_type, firmware)
     self._id = await self._rs.send_result_command("PNLSERD")
     self._zones = await self._init_zones()
