@@ -21,14 +21,16 @@ class RiscoLocal:
     self._zones = None
     self._partitions = None
     self._id = None
+    self._legacy_panel = False
 
   async def connect(self):
     await self._rs.connect()
     panel_type = await self._rs.send_result_command("PNLCNF")
-    if panel_type.startswith("RP"):
-      firmware = await self._rs.send_result_command("FSVER?")
-    else:
+    self._legacy_panel = not panel_type.startswith("RP")
+    if self._legacy_panel:
       firmware = ""
+    else:
+      firmware = await self._rs.send_result_command("FSVER?")
     self._panel_capabilities = panel_capabilities(panel_type, firmware)
     self._id = await self._rs.send_result_command("PNLSERD")
     self._zones = await self._init_zones()
@@ -125,9 +127,12 @@ class RiscoLocal:
       if zone_type == 0:
         return None
 
-      tech = await self._rs.send_result_command(f'ZLNKTYP{zone_id}?')
-      if tech.strip() == 'N':
-        return None
+      if self._legacy_panel:
+        tech = ''
+      else:
+        tech = await self._rs.send_result_command(f'ZLNKTYP{zone_id}?')
+        if tech.strip() == 'N':
+          return None
 
       status = await self._rs.send_result_command(f'ZSTT*{zone_id}?')
       if status.endswith('N'):
@@ -135,7 +140,11 @@ class RiscoLocal:
 
       label = await self._rs.send_result_command(f'ZLBL*{zone_id}?')
       partitions = await self._rs.send_result_command(f'ZPART&*{zone_id}?')
-      groups = await self._rs.send_result_command(f'ZAREA&*{zone_id}?')
+      if self._legacy_panel:
+        groups = '0'
+      else:
+        groups = await self._rs.send_result_command(f'ZAREA&*{zone_id}?')
+
       return Zone(self, zone_id, status, zone_type, label, partitions, groups, tech)
     except OperationError:
       return None
