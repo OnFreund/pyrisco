@@ -59,6 +59,7 @@ class Partition:
     """Group arming status."""
     raise NotImplementedError
 
+
 class Zone:
   """A representation of a Risco zone."""
 
@@ -85,6 +86,52 @@ class Zone:
   @property
   def bypassed(self):
     raise NotImplementedError
+
+
+class System:
+  """A representation of a Risco System."""
+
+  @property
+  def name(self):
+      """System name."""
+      raise NotImplementedError
+
+  @property
+  def low_battery_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def ac_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def monitoring_station_1_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def monitoring_station_2_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def monitoring_station_3_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def phone_line_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def clock_trouble(self):
+      raise NotImplementedError
+
+  @property
+  def box_tamper(self):
+      raise NotImplementedError
+
+  @property
+  def programming_mode(self):
+      raise NotImplementedError
+
 
 class UnauthorizedError(Exception):
   """Exception to indicate an error in authorization."""

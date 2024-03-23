@@ -4,6 +4,7 @@ from .const import PANEL_TYPE, PANEL_MODEL, PANEL_FW, MAX_ZONES, MAX_PARTS, MAX_
 from .panels import panel_capabilities
 from .partition import Partition
 from .zone import Zone
+from .system import System
 from .risco_socket import RiscoSocket
 from pyrisco.common import OperationError, GROUP_ID_TO_NAME
 
@@ -13,11 +14,13 @@ class RiscoLocal:
     self._rs = RiscoSocket(host, port, code, **kwargs)
     self._panel_capabilities = None
     self._listen_task = None
+    self._system_handlers = []
     self._zone_handlers = []
     self._partition_handlers = []
     self._error_handlers = []
     self._default_handlers = []
     self._event_handlers = []
+    self._system = None
     self._zones = None
     self._partitions = None
     self._id = None
@@ -33,6 +36,7 @@ class RiscoLocal:
       firmware = await self._rs.send_result_command("FSVER?")
     self._panel_capabilities = panel_capabilities(panel_type, firmware)
     self._id = await self._rs.send_result_command("PNLSERD")
+    self._system = await self._init_system()
     self._zones = await self._init_zones()
     self._partitions = await self._init_partitions()
     self._listen_task = asyncio.create_task(self._listen(self._rs.queue))
@@ -47,6 +51,9 @@ class RiscoLocal:
 
   def add_event_handler(self, handler):
     return RiscoLocal._add_handler(self._event_handlers, handler)
+
+  def add_system_handler(self, handler):
+    return RiscoLocal._add_handler(self._system_handlers, handler)
 
   def add_zone_handler(self, handler):
     return RiscoLocal._add_handler(self._zone_handlers, handler)
@@ -68,6 +75,10 @@ class RiscoLocal:
   @property
   def partitions(self):
     return self._partitions
+
+  @property
+  def system(self):
+    return self._system
 
   async def disarm(self, partition_id):
     """Disarm a partition."""
@@ -98,6 +109,14 @@ class RiscoLocal:
     def _remove():
       handlers.remove(handler)
     return _remove
+
+  async def _init_system(self):
+    try:
+      label = await self._rs.send_result_command(f'SYSLBL?')
+      status = await self._rs.send_result_command(f'SSTT?')
+    except OperationError:
+      return None
+    return System(self, label, status)
 
   async def _init_partitions(self):
     return await self._get_objects(1, self._panel_capabilities[MAX_PARTS], self._create_partition)
@@ -149,6 +168,10 @@ class RiscoLocal:
     except OperationError:
       return None
 
+  def _system_status(self, status):
+    self._system.update_status(status)
+    RiscoLocal._call_handlers(self._system_handlers, copy.copy(self._system))
+
   def _zone_status(self, zone_id, status):
     z = self._zones[zone_id]
     z.update_status(status)
@@ -196,6 +219,8 @@ class RiscoLocal:
           self._zone_status(int(command[4:]), result)
         elif command.startswith('PSTT'):
           self._partition_status(int(command[4:]), result)
+        elif command.startswith('SSTT'):
+          self._system_status(result)
         else:
           self._default(command, result, *params)
       except Exception as error:
