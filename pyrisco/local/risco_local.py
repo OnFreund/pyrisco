@@ -112,8 +112,8 @@ class RiscoLocal:
 
   async def _init_system(self):
     try:
-      label = await self._rs.send_result_command(f'SYSLBL?')
-      status = await self._rs.send_result_command(f'SSTT?')
+      label = await self._rs.send_result_command_limited(f'SYSLBL?')
+      status = await self._rs.send_result_command_limited(f'SSTT?')
     except OperationError:
       return None
     return System(self, label, status)
@@ -131,38 +131,38 @@ class RiscoLocal:
 
   async def _create_partition(self, partition_id):
     try:
-      status = await self._rs.send_result_command(f'PSTT{partition_id}?')
+      status = await self._rs.send_result_command_limited(f'PSTT{partition_id}?')
       if not 'E' in status:
         return None
 
-      label = await self._rs.send_result_command(f'PLBL{partition_id}?')
+      label = await self._rs.send_result_command_limited(f'PLBL{partition_id}?')
     except OperationError:
       return None
     return Partition(self, partition_id, label, status)
 
   async def _create_zone(self, zone_id):
     try:
-      zone_type = int(await self._rs.send_result_command(f'ZTYPE*{zone_id}?'))
+      zone_type = int(await self._rs.send_result_command_limited(f'ZTYPE*{zone_id}?'))
       if zone_type == 0:
         return None
 
       if self._legacy_panel:
         tech = ''
       else:
-        tech = await self._rs.send_result_command(f'ZLNKTYP{zone_id}?')
+        tech = await self._rs.send_result_command_limited(f'ZLNKTYP{zone_id}?')
         if tech.strip() == 'N':
           return None
 
-      status = await self._rs.send_result_command(f'ZSTT*{zone_id}?')
+      status = await self._rs.send_result_command_limited(f'ZSTT*{zone_id}?')
       if status.endswith('N'):
         return None
 
-      label = await self._rs.send_result_command(f'ZLBL*{zone_id}?')
-      partitions = await self._rs.send_result_command(f'ZPART&*{zone_id}?')
+      label = await self._rs.send_result_command_limited(f'ZLBL*{zone_id}?')
+      partitions = await self._rs.send_result_command_limited(f'ZPART&*{zone_id}?')
       if self._legacy_panel:
         groups = '0'
       else:
-        groups = await self._rs.send_result_command(f'ZAREA&*{zone_id}?')
+        groups = await self._rs.send_result_command_limited(f'ZAREA&*{zone_id}?')
 
       return Zone(self, zone_id, status, zone_type, label, partitions, groups, tech)
     except OperationError:

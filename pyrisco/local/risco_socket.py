@@ -98,16 +98,21 @@ class RiscoSocket:
     command = await self.send_command(command)
     return command.split("=")[1]
 
-  async def send_command(self, command, force_encryption=False):
+  async def send_result_command_limited(self, command):
     async with self._semaphore:
-      self._increment_cmd_id()
-      self._write_command(self._cmd_id, command, force_encryption)
-      future = asyncio.Future()
-      self._futures[self._cmd_id-1] = future
-      try:
-        return await asyncio.wait_for(future, 1)
-      except asyncio.TimeoutError:
-        raise OperationError(f'Timeout in command: {command}')
+      return await self.send_result_command(command)
+
+  async def send_command(self, command):
+    self._increment_cmd_id()
+    cmd_id = self._cmd_id
+    future = asyncio.Future()
+    self._futures[cmd_id-1] = future
+    self._write_command(cmd_id, command)
+    try:
+      async with asyncio.timeout(1):
+        return await future
+    except asyncio.TimeoutError:
+      raise OperationError(f'Timeout in command: {command}')
 
   async def _handle_incoming(self, cmd_id, command, crc):
     self._write_command(cmd_id, 'ACK')
@@ -122,8 +127,8 @@ class RiscoSocket:
       buffer += await self._reader.readuntil(END)
     return self._crypt.decode(buffer)
 
-  def _write_command(self, cmd_id, command, force_encryption=False):
-    buffer = self._crypt.encode(cmd_id, command, force_encryption)
+  def _write_command(self, cmd_id, command):
+    buffer = self._crypt.encode(cmd_id, command)
     self._writer.write(buffer)
 
   async def _close(self):
