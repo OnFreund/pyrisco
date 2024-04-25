@@ -105,7 +105,7 @@ class RiscoSocket:
       future = asyncio.Future()
       self._futures[self._cmd_id-1] = future
       try:
-        return await asyncio.wait_for(future, 1)
+        return await asyncio.wait_for(future, 10)
       except asyncio.TimeoutError:
         raise OperationError(f'Timeout in command: {command}')
 
