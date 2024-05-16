@@ -36,9 +36,9 @@ class RiscoLocal:
       firmware = await self._rs.send_result_command("FSVER?")
     self._panel_capabilities = panel_capabilities(panel_type, firmware)
     self._id = await self._rs.send_result_command("PNLSERD")
-    self._system = await self._init_system()
     self._zones = await self._init_zones()
     self._partitions = await self._init_partitions()
+    self._system = await self._init_system()
     self._listen_task = asyncio.create_task(self._listen(self._rs.queue))
 
   async def disconnect(self):
