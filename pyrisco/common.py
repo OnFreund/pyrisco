@@ -143,3 +143,6 @@ class CannotConnectError(Exception):
 
 class OperationError(Exception):
   """Exception to indicate an error in operation."""
+
+class RetriableOperationError(OperationError):
+  """Exception to indicate an error in operation that can be retried and might succeed."""

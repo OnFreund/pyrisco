@@ -5,7 +5,7 @@ import asyncio
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetriableOperationError, GROUP_ID_TO_NAME
 
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
@@ -19,6 +19,8 @@ EVENTS_URL = (
 BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
 
 NUM_RETRIES = 3
+
+RETRIABLE_ERROR_CODE = 72
 
 
 class RiscoCloud:
@@ -50,6 +52,8 @@ class RiscoCloud:
       raise UnauthorizedError(json["errorText"])
 
     if "result" in json and json["result"] != 0:
+      if json["result"] == RETRIABLE_ERROR_CODE:
+        raise RetriableOperationError(str(json))
       raise OperationError(str(json))
 
     return json["response"]
@@ -64,7 +68,7 @@ class RiscoCloud:
             "sessionToken": self._session_id,
         }
         return await self._authenticated_post(site_url, site_body)
-      except UnauthorizedError:
+      except (UnauthorizedError, RetriableOperationError):
         if i + 1 == NUM_RETRIES:
           raise
         await self.close()
