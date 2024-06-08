@@ -20,7 +20,7 @@ BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/Se
 
 NUM_RETRIES = 3
 
-RETRIABLE_ERROR_CODE = 72
+RETRIABLE_RESULT_CODE = 72
 
 
 class RiscoCloud:
@@ -68,11 +68,12 @@ class RiscoCloud:
             "sessionToken": self._session_id,
         }
         return await self._authenticated_post(site_url, site_body)
-      except (UnauthorizedError, RetriableOperationError):
+      except (UnauthorizedError, RetriableOperationError) as e:
         if i + 1 == NUM_RETRIES:
           raise
-        await self.close()
-        await self.login()
+        if isinstance(e, UnauthorizedError):
+          await self.close()
+          await self.login()
 
   async def _login_user_pass(self):
     headers = {"Content-Type": "application/json"}
