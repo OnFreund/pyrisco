@@ -203,6 +203,9 @@ class RiscoLocal:
         item = await queue.get()
         if isinstance(item, Exception):
           self._error(item)
+          if isinstance(item, ConnectionResetError):
+            await self.disconnect()
+            break
           continue
 
         if item.startswith('CLOCK'):

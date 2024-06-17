@@ -77,6 +77,9 @@ class RiscoSocket:
             future.set_result(command)
         else:
           await self._handle_incoming(cmd_id, command, crc)
+      except ConnectionResetError as error:
+        await self._queue.put(error)
+        break
       except Exception as error:
         await self._queue.put(error)
 
