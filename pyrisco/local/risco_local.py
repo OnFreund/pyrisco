@@ -43,8 +43,9 @@ class RiscoLocal:
 
   async def disconnect(self):
     await self._rs.disconnect()
-    self._listen_task.cancel()
-    self._listen_task = None
+    if self._listen_task:
+      self._listen_task.cancel()
+      self._listen_task = None
 
   def add_error_handler(self, handler):
     return RiscoLocal._add_handler(self._error_handlers, handler)
