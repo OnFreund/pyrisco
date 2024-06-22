@@ -12,7 +12,7 @@ class RiscoSocket:
     self._code = code
     self._encoding = kwargs.get('encoding', 'utf-8')
     self._max_concurrency = kwargs.get('concurrency', 4)
-    self._communication_delay = kwargs.get('communication_delay', 0)
+    self._communication_delay = kwargs.get('communication_delay', 1)
     self._reader = None
     self._writer = None
     self._crypt = None
