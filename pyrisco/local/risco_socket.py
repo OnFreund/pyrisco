@@ -1,6 +1,6 @@
 import asyncio
 from .risco_crypt import RiscoCrypt, ESCAPED_END, END
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError
+from pyrisco.common import UnauthorizedError, CannotConnectError, ConnectionError, OperationError
 
 MIN_CMD_ID = 1
 MAX_CMD_ID = 49
@@ -13,6 +13,7 @@ class RiscoSocket:
     self._encoding = kwargs.get('encoding', 'utf-8')
     self._max_concurrency = kwargs.get('concurrency', 4)
     self._communication_delay = kwargs.get('communication_delay', 1)
+    self._max_timeout_keep_alive_subseq = kwargs.get('max_timeout_subseq', 3)
     self._reader = None
     self._writer = None
     self._crypt = None
@@ -89,8 +90,19 @@ class RiscoSocket:
       try:
         await self.send_result_command("CLOCK")
       except OperationError as error:
-        await self._queue.put(error)
-
+        timeout_keep_alive_subseq += 1
+        try:
+          if self._max_timeout_keep_alive_subseq > 0:
+            if timeout_keep_alive_subseq >= self._max_timeout_keep_alive_subseq:
+              raise ConnectionError
+        except Exception as error:
+          await self._queue.put(error)
+          break
+        else: 
+          await self._queue.put(error)
+      else:
+        timeout_keep_alive_subseq = 0
+        
       await asyncio.sleep(5)
 
   async def send_ack_command(self, command):
