@@ -6,7 +6,7 @@ from .partition import Partition
 from .zone import Zone
 from .system import System
 from .risco_socket import RiscoSocket
-from pyrisco.common import OperationError, GROUP_ID_TO_NAME
+from pyrisco.common import OperationError, ConnectionError, GROUP_ID_TO_NAME
 
 
 class RiscoLocal:
@@ -204,7 +204,7 @@ class RiscoLocal:
         item = await queue.get()
         if isinstance(item, Exception):
           self._error(item)
-          if isinstance(item, ConnectionResetError):
+          if isinstance(item, ConnectionError):
             await self.disconnect()
             break
           continue
