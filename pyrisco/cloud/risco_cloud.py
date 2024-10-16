@@ -54,13 +54,13 @@ class RiscoCloud:
 
     return json["response"]
 
-  async def _site_post(self, url, body):
+  async def _site_post(self, url, body, from_control_panel=True):
     site_url = url % self._site_id
     for i in range(NUM_RETRIES):
       try:
         site_body = {
             **body,
-            "fromControlPanel": True,
+            "fromControlPanel": from_control_panel,
             "sessionToken": self._session_id,
         }
         return await self._authenticated_post(site_url, site_body)
@@ -132,7 +132,7 @@ class RiscoCloud:
 
   async def get_state(self):
     """Get partitions and zones."""
-    resp = await self._site_post(STATE_URL, {})
+    resp = await self._site_post(STATE_URL, {}, from_control_panel=False)
     return Alarm(self, resp["state"]["status"])
 
   async def disarm(self, partition):
