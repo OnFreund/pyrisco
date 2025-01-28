@@ -7,24 +7,24 @@ from .alarm import Alarm
 from .event import Event
 from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, GROUP_ID_TO_NAME
 
-
-LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
-SITE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/GetAll"
-PIN_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/Login"
-STATE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/GetState"
-CONTROL_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/PartArm"
+RISCO_CLOUD_BASE_API = "https://www.riscocloud.com/webapi/api/"
+RISCO_CLOUD_SITE_API = RISCO_CLOUD_BASE_API + "wuws/site/"
+LOGIN_URL = RISCO_CLOUD_BASE_API + "auth/login"
+SITE_URL = RISCO_CLOUD_SITE_API + "GetAll"
+PIN_URL = RISCO_CLOUD_SITE_API + "%s/Login"
+STATE_URL = RISCO_CLOUD_SITE_API + "%s/ControlPanel/GetState"
+CONTROL_URL = RISCO_CLOUD_SITE_API + "%s/ControlPanel/PartArm"
 EVENTS_URL = (
-  "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/GetEventLog"
+    RISCO_CLOUD_SITE_API + "%s/ControlPanel/GetEventLog"
 )
-BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
-
+BYPASS_URL = RISCO_CLOUD_SITE_API + "%s/ControlPanel/SetZoneBypassStatus"
 NUM_RETRIES = 3
 
 
 class RiscoCloud:
   """A connection to a Risco alarm system."""
 
-  def __init__(self, username, password, pin, language="en"):
+  def __init__(self, username, password, pin, language="en", proxy=None, proxy_auth=None, from_control_panel=True):
     """Initialize the object."""
     self._username = username
     self._password = password
@@ -36,7 +36,10 @@ class RiscoCloud:
     self._site_name = None
     self._site_uuid = None
     self._session = None
+    self._proxy = proxy
+    self._proxy_auth = proxy_auth
     self._created_session = False
+    self._from_control_panel = from_control_panel
 
   async def _authenticated_post(self, url, body):
     headers = {
@@ -59,9 +62,9 @@ class RiscoCloud:
     for i in range(NUM_RETRIES):
       try:
         site_body = {
-            **body,
-            "fromControlPanel": from_control_panel,
-            "sessionToken": self._session_id,
+          **body,
+          "sessionToken": self._session_id,
+          "fromControlPanel": from_control_panel,
         }
         return await self._authenticated_post(site_url, site_body)
       except UnauthorizedError:
@@ -75,7 +78,7 @@ class RiscoCloud:
     body = {"userName": self._username, "password": self._password}
     try:
       async with self._session.post(
-        LOGIN_URL, headers=headers, json=body
+          LOGIN_URL, headers=headers, json=body
       ) as resp:
         json = await resp.json()
         if json["status"] == 401:
@@ -103,7 +106,7 @@ class RiscoCloud:
     await self.close()
     if self._session is None:
       if session is None:
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(proxy=self._proxy, proxy_auth=self._proxy_auth)
         self._created_session = True
       else:
         self._session = session
@@ -123,7 +126,7 @@ class RiscoCloud:
   async def login(self, session=None):
     """Login to Risco Cloud."""
     if self._session_id:
-        return
+      return
 
     await self._init_session(session)
     await self._login_user_pass()
@@ -132,8 +135,8 @@ class RiscoCloud:
 
   async def get_state(self):
     """Get partitions and zones."""
-    resp = await self._site_post(STATE_URL, {}, from_control_panel=False)
-    return Alarm(self, resp["state"]["status"])
+    resp = await self._site_post(STATE_URL, {}, from_control_panel=self._from_control_panel)
+    return Alarm(self, resp["state"])
 
   async def disarm(self, partition):
     """Disarm the alarm."""

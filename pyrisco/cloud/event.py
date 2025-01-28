@@ -17,6 +17,7 @@ EVENT_IDS_TO_TYPES = {
   121: "group arm",
 }
 
+
 class Event:
   """A representation of a Risco event."""
 
@@ -60,14 +61,24 @@ class Event:
     return self.raw["eventName"]
 
   @property
+  def description_hint(self):
+    """Event Description Hint."""
+    return self.raw["eventDescriptorHint"]
+
+  @property
   def category_id(self):
     """Event group number."""
     return self.raw["group"]
 
   @property
   def category_name(self):
-    """Event group number."""
+    """Event group name."""
     return self.raw["groupName"]
+
+  @property
+  def source_name(self):
+    """Event Source Name."""
+    return self.raw["sourceName"]
 
   @property
   def zone_id(self):
@@ -94,3 +105,8 @@ class Event:
   @property
   def source_id(self):
     return self._source_id
+
+  @property
+  def report_status(self):
+    """Event Report Status."""
+    return self.raw["reportStatus"]
