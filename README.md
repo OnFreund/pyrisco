@@ -14,6 +14,9 @@ Python 3.7 and above are supported.
 ## How to use
 
 ### Cloud
+
+See Cloud examples in [examples](examples) folder.
+
 ```python
 import asyncio
 from pyrisco import RiscoCloud
