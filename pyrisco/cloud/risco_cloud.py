@@ -5,7 +5,7 @@ import asyncio
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError,  RetryableOperationError, GROUP_ID_TO_NAME
 
 RISCO_CLOUD_BASE_API = "https://www.riscocloud.com/webapi/api/"
 RISCO_CLOUD_SITE_API = RISCO_CLOUD_BASE_API + "wuws/site/"
@@ -19,12 +19,12 @@ EVENTS_URL = (
 )
 BYPASS_URL = RISCO_CLOUD_SITE_API + "%s/ControlPanel/SetZoneBypassStatus"
 NUM_RETRIES = 3
-
+RETRYABLE_RESULT_CODE = 72
 
 class RiscoCloud:
   """A connection to a Risco alarm system."""
 
-  def __init__(self, username, password, pin, language="en", proxy=None, proxy_auth=None, from_control_panel=True):
+  def __init__(self, username, password, pin, language="en", proxy=None, proxy_auth=None, from_control_panel=True, fallback_to_cloud=False):
     """Initialize the object."""
     self._username = username
     self._password = password
@@ -40,6 +40,7 @@ class RiscoCloud:
     self._proxy_auth = proxy_auth
     self._created_session = False
     self._from_control_panel = from_control_panel
+    self._fallback_to_cloud = fallback_to_cloud
 
   async def _authenticated_post(self, url, body):
     headers = {
@@ -52,12 +53,15 @@ class RiscoCloud:
     if json["status"] == 401:
       raise UnauthorizedError(json["errorText"])
 
+    if json["result"] == RETRYABLE_RESULT_CODE:
+      raise RetryableOperationError(str(json))
+
     if "result" in json and json["result"] != 0:
       raise OperationError(str(json))
 
     return json["response"]
 
-  async def _site_post(self, url, body, from_control_panel=True):
+  async def _site_post(self, url, body, from_control_panel=True, fallback_to_cloud=False):
     site_url = url % self._site_id
     for i in range(NUM_RETRIES):
       try:
@@ -67,11 +71,12 @@ class RiscoCloud:
           "fromControlPanel": from_control_panel,
         }
         return await self._authenticated_post(site_url, site_body)
-      except UnauthorizedError:
+      except (UnauthorizedError, RetryableOperationError) as e:
         if i + 1 == NUM_RETRIES:
           raise
-        await self.close()
-        await self.login()
+        if isinstance(e, UnauthorizedError):
+          await self.close()
+          await self.login()
 
   async def _login_user_pass(self):
     headers = {"Content-Type": "application/json"}
