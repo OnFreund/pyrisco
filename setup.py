@@ -21,9 +21,13 @@ REQUIRES_PYTHON = '>=3.7.0'
 VERSION = '0.6.6'
 
 REQUIRED = ['aiohttp']
+TEST_REQUIRE = ['pytest']
 
-EXTRAS = {}
-
+EXTRAS = {
+    'dev': [
+        'tabulate'
+    ]
+}
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -101,6 +105,7 @@ setup(
     #     'console_scripts': ['mycli=mymodule:cli'],
     # },
     install_requires=REQUIRED,
+    tests_require=TEST_REQUIRE,
     extras_require=EXTRAS,
     include_package_data=True,
     license='MIT',

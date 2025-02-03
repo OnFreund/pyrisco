@@ -138,11 +138,12 @@ class UnauthorizedError(Exception):
 
 
 class CannotConnectError(Exception):
-  """Exception to indicate an error in authorization."""
+  """Exception to indicate an error in connecting to Risco panel or Cloud."""
 
 
 class OperationError(Exception):
   """Exception to indicate an error in operation."""
+
 
 class RetryableOperationError(OperationError):
   """Exception to indicate an error in operation that can be retried and might succeed."""

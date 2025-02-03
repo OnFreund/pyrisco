@@ -5,7 +5,8 @@ import asyncio
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError,  RetryableOperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, \
+  GROUP_ID_TO_NAME
 
 RISCO_CLOUD_BASE_API = "https://www.riscocloud.com/webapi/api/"
 RISCO_CLOUD_SITE_API = RISCO_CLOUD_BASE_API + "wuws/site/"
@@ -21,10 +22,12 @@ BYPASS_URL = RISCO_CLOUD_SITE_API + "%s/ControlPanel/SetZoneBypassStatus"
 NUM_RETRIES = 3
 RETRYABLE_RESULT_CODE = 72
 
+
 class RiscoCloud:
   """A connection to a Risco alarm system."""
 
-  def __init__(self, username, password, pin, language="en", proxy=None, proxy_auth=None, from_control_panel=True, fallback_to_cloud=False):
+  def __init__(self, username, password, pin, language="en", proxy=None, proxy_auth=None, from_control_panel=True,
+               fallback_to_cloud=False):
     """Initialize the object."""
     self._username = username
     self._password = password
@@ -53,7 +56,7 @@ class RiscoCloud:
     if json["status"] == 401:
       raise UnauthorizedError(json["errorText"])
 
-    if json["result"] == RETRYABLE_RESULT_CODE:
+    if "result" in json and json["result"] == RETRYABLE_RESULT_CODE:
       raise RetryableOperationError(str(json))
 
     if "result" in json and json["result"] != 0:
@@ -61,7 +64,8 @@ class RiscoCloud:
 
     return json["response"]
 
-  async def _site_post(self, url, body, from_control_panel=True, fallback_to_cloud=False):
+  async def _site_post(self, url, body):
+    from_control_panel = self._from_control_panel
     site_url = url % self._site_id
     for i in range(NUM_RETRIES):
       try:
@@ -74,6 +78,8 @@ class RiscoCloud:
       except (UnauthorizedError, RetryableOperationError) as e:
         if i + 1 == NUM_RETRIES:
           raise
+        if self._fallback_to_cloud and isinstance(e, RetryableOperationError):
+          from_control_panel = False
         if isinstance(e, UnauthorizedError):
           await self.close()
           await self.login()
@@ -140,7 +146,7 @@ class RiscoCloud:
 
   async def get_state(self):
     """Get partitions and zones."""
-    resp = await self._site_post(STATE_URL, {}, from_control_panel=self._from_control_panel)
+    resp = await self._site_post(STATE_URL, {})
     return Alarm(self, resp["state"])
 
   async def disarm(self, partition):

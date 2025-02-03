@@ -1,5 +1,6 @@
 from pyrisco.common import GROUP_ID_TO_NAME, Partition as BasePartition
 
+
 class Partition(BasePartition):
   """A representation of a Risco partition."""
 

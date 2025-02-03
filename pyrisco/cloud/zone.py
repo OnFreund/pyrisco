@@ -1,5 +1,6 @@
 from pyrisco.common import GROUP_ID_TO_NAME, Zone as BaseZone
 
+
 class Zone(BaseZone):
   """A representation of a Risco zone."""
 

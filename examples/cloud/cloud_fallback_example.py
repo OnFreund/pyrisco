@@ -4,16 +4,16 @@ from tabulate import tabulate
 from datetime import datetime, timedelta
 
 
-class RiscoCloudProxyExample:
-  def __init__(self, username, password, pin, from_control_panel=True, proxy=None, proxy_auth=None):
+class RiscoCloudExample:
+  def __init__(self, username, password, pin, from_control_panel=True, fallback_to_cloud=False):
     self.username = username
     self.password = password
     self.pin = pin
     self.from_control_panel = from_control_panel
-    self.proxy = proxy
-    self.proxy_auth = proxy_auth
-    self.risco_cloud = RiscoCloud(self.username, self.password, self.pin, proxy=self.proxy, proxy_auth=self.proxy_auth,
-                                  from_control_panel=self.from_control_panel)
+    self.fallback_to_cloud = fallback_to_cloud
+    self.risco_cloud = RiscoCloud(self.username, self.password, self.pin,
+                                  from_control_panel=self.from_control_panel,
+                                  fallback_to_cloud=self.fallback_to_cloud)
 
   async def login(self):
     return await self.risco_cloud.login()
@@ -22,7 +22,7 @@ class RiscoCloudProxyExample:
     return await self.risco_cloud.close()
 
   def tabulate(self, dataset):
-    if (len(dataset) == 0):
+    if len(dataset) == 0:
       print("No data")
       return
     dataset = list(dataset)
@@ -58,39 +58,7 @@ class RiscoCloudProxyExample:
     self.tabulate(events)
     await self.close()
 
-  async def test(self):
-    """Example from README.md"""
-    await self.login()
-    alarm = await r.get_state()
-    # partitions and zones are zero-based in Cloud
-    print(alarm.partitions[0].armed)
-
-    events = await r.get_events("2020-01-01T00:00:00Z", 10)
-    print(events[0].name)
-
-    print(alarm.zones[0].name)
-    print(alarm.zones[0].triggered)
-    print(alarm.zones[0].bypassed)
-
-    # arm partition 0
-    await r.partitions[0].arm()
-
-    # and disarm it
-    await r.partitions[0].disarm()
-
-    # Partial arming
-    await r.partitions[0].partial_arm()
-
-    # Group arming
-    await r.partitions[0].group_arm("B")
-    # or a zero based index
-    await r.partitions[0].group_arm(1)
-
-    # Don't forget to close when you're done
-    await self.close()
-
-
 # username, password, pin from Risco Cloud ( https://www.riscocloud.com/ )
-r = RiscoCloudProxyExample("username", "password", "pin", from_control_panel=True, proxy="http://192.168.1.2:8080")
+r = RiscoCloudExample("username", "password", "pin", from_control_panel=True, fallback_to_cloud=True)
 asyncio.run(r.display_state())
 asyncio.run(r.display_events(datetime.now() - timedelta(days=1), 100))
