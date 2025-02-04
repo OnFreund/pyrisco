@@ -7,7 +7,7 @@ from .dev_collection import DevCollection
 class Alarm:
   """A representation of a Risco alarm system."""
 
-  def __init__(self, api, raw):
+  def __init__(self, api, raw, from_control_panel):
     """Read alarm from response."""
     self._api = api
     self._raw = raw
@@ -16,6 +16,12 @@ class Alarm:
     self._zones = None
     self._users = None
     self._dev_collections = None
+    self._from_control_panel = from_control_panel
+
+  @property
+  def is_from_control_panel(self):
+    """Is information comes from control Panel via RiscoCloud."""
+    return self._from_control_panel
 
   @property
   def is_online(self):

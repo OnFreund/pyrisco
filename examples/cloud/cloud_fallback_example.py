@@ -34,7 +34,8 @@ class RiscoCloudExample:
     await self.login()
     state = await self.risco_cloud.get_state()
     print('==================== Alarm status ====================')
-    ALARM_PROPERTIES = ['cp_time', 'system_status', 'system_ready', 'trouble', 'bell_status', 'bell_on',
+    ALARM_PROPERTIES = ['is_from_control_panel',
+                        'cp_time', 'system_status', 'system_ready', 'trouble', 'bell_status', 'bell_on',
                         'alarm_pending', 'battery_low', 'ac_lost', 'is_online', 'last_connected_time',
                         'last_log_update', 'last_status_update', 'last_event_reported']
     for prop in ALARM_PROPERTIES:
@@ -57,6 +58,7 @@ class RiscoCloudExample:
     print('==================== Events ====================')
     self.tabulate(events)
     await self.close()
+
 
 # username, password, pin from Risco Cloud ( https://www.riscocloud.com/ )
 r = RiscoCloudExample("username", "password", "pin", from_control_panel=True, fallback_to_cloud=True)
