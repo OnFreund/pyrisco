@@ -15,6 +15,25 @@ Python 3.7 and above are supported.
 
 ### Cloud
 
+#### Cloud From control panel and fallback to Cloud
+
+When requesting RiscoCloud information two modes are available:
+- `from_control_panel=True` will request to RiscoCloud to connect to your alarm's control panel directly (via the cloud). This mode allows triggered zones to be updated in real-time.
+- `from_control_panel=False` will request to RiscoCloud the latest known information published by your alarm's control panel to RiscoCloud. This mode does not provide real-time triggered zones information but is more reliable in case of temporary network issues.
+
+In case of temporary outage (network or configuration issue) between your alarm's panel and RiscoCloud, if `from_control_panel=True`
+is set, an OperationError will be raised after 3 retries.
+
+To avoid raising an OperationError in case of temporary outage, you can set `from_control_panel=True` and use `fallback_to_cloud=True` to fall back to RiscoCloud in case of error.
+A property `is_from_control_panel` is set on Alarm object to indicate if the information is coming from the control panel or from the cloud.
+
+#### Cloud with Proxy
+
+Proxy use is supported by passing a `proxy` and `proxy_auth` (optional) parameter to the `RiscoCloud` constructor.
+See [aiohttp documentation](https://docs.aiohttp.org/en/stable/client_advanced.html#proxy-support) for more information.
+
+### Examples
+
 See Cloud examples in [examples](examples) folder.
 
 ```python
@@ -24,7 +43,7 @@ from pyrisco import RiscoCloud
 async def test_cloud():
     # from_control_panel=True will request to riscocloud to connect to your alarm's control panel directly (via the cloud)
     # this could not be possible if your alarm has connectivity issues (alarm setup, firewall filtering, alarm's internet connectivity issue)
-    r = RiscoCloud("<username>", "<password>", "<pincode>", from_control_panel=True)
+    r = RiscoCloud("<username>", "<password>", "<pincode>", from_control_panel=True, fallback_to_cloud=True)
 
     # you can also pass your own session to login. It will not be closed    
     await r.login()
@@ -58,6 +77,7 @@ async def test_cloud():
 
 asyncio.run(test_cloud())
 ```
+
 
 ### Local
 ```python
