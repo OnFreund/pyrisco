@@ -5,7 +5,7 @@ import asyncio
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, GROUP_ID_TO_NAME
 
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
@@ -19,6 +19,7 @@ EVENTS_URL = (
 BYPASS_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/SetZoneBypassStatus"
 
 NUM_RETRIES = 3
+RETRYABLE_RESULT_CODE = 72
 
 
 class RiscoCloud:
@@ -49,13 +50,17 @@ class RiscoCloud:
     if json["status"] == 401:
       raise UnauthorizedError(json["errorText"])
 
+    if "result" in json and json["result"] == RETRYABLE_RESULT_CODE:
+      raise RetryableOperationError(str(json))
+
     if "result" in json and json["result"] != 0:
       raise OperationError(str(json))
 
     return json["response"]
 
-  async def _site_post(self, url, body, from_control_panel=True):
+  async def _site_post(self, url, body):
     site_url = url % self._site_id
+    from_control_panel = True
     for i in range(NUM_RETRIES):
       try:
         site_body = {
@@ -63,12 +68,17 @@ class RiscoCloud:
             "fromControlPanel": from_control_panel,
             "sessionToken": self._session_id,
         }
-        return await self._authenticated_post(site_url, site_body)
-      except UnauthorizedError:
+        return await self._authenticated_post(site_url, site_body), from_control_panel
+      except (UnauthorizedError, RetryableOperationError) as e:
         if i + 1 == NUM_RETRIES:
+          if isinstance(e, RetryableOperationError):
+            raise OperationError("Failed to perform operation after retries") from e
           raise
-        await self.close()
-        await self.login()
+        if isinstance(e, RetryableOperationError):
+          from_control_panel = False
+        elif isinstance(e, UnauthorizedError):
+          await self.close()
+          await self.login()
 
   async def _login_user_pass(self):
     headers = {"Content-Type": "application/json"}
@@ -109,8 +119,8 @@ class RiscoCloud:
         self._session = session
 
   async def _send_control_command(self, body):
-    resp = await self._site_post(CONTROL_URL, body)
-    return Alarm(self, resp)
+    resp, from_control_panel = await self._site_post(CONTROL_URL, body)
+    return Alarm(self, resp, from_control_panel)
 
   async def close(self):
     """Close the connection."""
@@ -132,8 +142,8 @@ class RiscoCloud:
 
   async def get_state(self):
     """Get partitions and zones."""
-    resp = await self._site_post(STATE_URL, {}, from_control_panel=False)
-    return Alarm(self, resp["state"]["status"])
+    resp, from_control_panel = await self._site_post(STATE_URL, {})
+    return Alarm(self, resp["state"]["status"], from_control_panel)
 
   async def disarm(self, partition):
     """Disarm the alarm."""
@@ -173,15 +183,15 @@ class RiscoCloud:
       "newerThan": newer_than,
       "offset": 0,
     }
-    response = await self._site_post(EVENTS_URL, body)
+    response, from_control_panel = await self._site_post(EVENTS_URL, body)
     return [Event(e) for e in response["controlPanelEventsList"]]
 
   async def bypass_zone(self, zone, bypass):
     """Bypass or unbypass a zone."""
     status = 2 if bypass else 3
     body = {"zones": [{"trouble": 0, "ZoneID": zone, "Status": status}]}
-    resp = await self._site_post(BYPASS_URL, body)
-    return Alarm(self, resp)
+    resp, from_control_panel = await self._site_post(BYPASS_URL, body)
+    return Alarm(self, resp, from_control_panel)
 
   @property
   def site_id(self):

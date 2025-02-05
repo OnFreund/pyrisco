@@ -4,12 +4,18 @@ from .zone import Zone
 class Alarm:
   """A representation of a Risco alarm system."""
 
-  def __init__(self, api, raw):
+  def __init__(self, api, raw, from_control_panel):
     """Read alarm from response."""
     self._api = api
     self._raw = raw
     self._partitions = None
     self._zones = None
+    self._from_control_panel = from_control_panel
+
+  @property
+  def is_from_control_panel(self):
+    """Is information coming from Control Panel via RiscoCloud."""
+    return self._from_control_panel
 
   @property
   def partitions(self):
