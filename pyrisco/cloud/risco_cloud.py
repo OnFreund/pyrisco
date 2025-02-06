@@ -68,7 +68,7 @@ class RiscoCloud:
             "fromControlPanel": from_control_panel,
             "sessionToken": self._session_id,
         }
-        return await self._authenticated_post(site_url, site_body), from_control_panel
+        return await self._authenticated_post(site_url, site_body), not from_control_panel
       except (UnauthorizedError, RetryableOperationError) as e:
         if i + 1 == NUM_RETRIES:
           if isinstance(e, RetryableOperationError):
@@ -119,8 +119,8 @@ class RiscoCloud:
         self._session = session
 
   async def _send_control_command(self, body):
-    resp, from_control_panel = await self._site_post(CONTROL_URL, body)
-    return Alarm(self, resp, from_control_panel)
+    resp, assumed_control_panel_state = await self._site_post(CONTROL_URL, body)
+    return Alarm(self, resp, assumed_control_panel_state)
 
   async def close(self):
     """Close the connection."""
@@ -142,8 +142,8 @@ class RiscoCloud:
 
   async def get_state(self):
     """Get partitions and zones."""
-    resp, from_control_panel = await self._site_post(STATE_URL, {})
-    return Alarm(self, resp["state"]["status"], from_control_panel)
+    resp, assumed_control_panel_state = await self._site_post(STATE_URL, {})
+    return Alarm(self, resp["state"]["status"], assumed_control_panel_state)
 
   async def disarm(self, partition):
     """Disarm the alarm."""
@@ -183,15 +183,15 @@ class RiscoCloud:
       "newerThan": newer_than,
       "offset": 0,
     }
-    response, from_control_panel = await self._site_post(EVENTS_URL, body)
+    response, assumed_control_panel_state = await self._site_post(EVENTS_URL, body)
     return [Event(e) for e in response["controlPanelEventsList"]]
 
   async def bypass_zone(self, zone, bypass):
     """Bypass or unbypass a zone."""
     status = 2 if bypass else 3
     body = {"zones": [{"trouble": 0, "ZoneID": zone, "Status": status}]}
-    resp, from_control_panel = await self._site_post(BYPASS_URL, body)
-    return Alarm(self, resp, from_control_panel)
+    resp, assumed_control_panel_state = await self._site_post(BYPASS_URL, body)
+    return Alarm(self, resp, assumed_control_panel_state)
 
   @property
   def site_id(self):
