@@ -105,6 +105,11 @@ class RiscoLocal:
     if self.zones[zone_id].bypassed != bypass:
       await self._rs.send_ack_command(F'ZBYPAS={zone_id}')
 
+  async def set_time(self, time):
+    """Set the time of the panel."""
+    formatted_time = time.strftime('%d/%m/%Y %H:%M')
+    await self._rs.send_ack_command(F'CLOCK={formatted_time}')
+
   def _add_handler(handlers, handler):
     handlers.append(handler)
     def _remove():
