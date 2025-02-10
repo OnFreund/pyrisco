@@ -19,7 +19,7 @@ Python 3.7 and above are supported.
 
 Pyrisco will instruct RiscoCloud to request updates from your control panel, if there is an issue RiscoCloud will return a 72 error code, if this happens,
 * pyrisco will try a second time in fallback mode, which will request the last known state from RiscoCloud.
-* a flag `assumed_control_panel_state` will be set to True on the Alarm object to indicate that the state is assumed.  
+* A flag named `assumed_control_panel_state` will be set to True on the Alarm object to indicate that the state is assumed, rather than obtained from the panel. **Assumed states could be stale.**
 
 ### Example
 
