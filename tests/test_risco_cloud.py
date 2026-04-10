@@ -42,7 +42,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(risco_cloud._access_token, "mock_access_token")
     mock_session.post.assert_called_with(
       LOGIN_URL,
-      headers={"Content-Type": "application/json"},
+      headers={"Content-Type": "application/json", "User-Agent": "pyrisco/1.0"},
       json={"userName": "username", "password": "password"}
     )
     mock_authenticated_post.assert_called()
@@ -72,7 +72,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     mock_session.post.assert_called_with(
       LOGIN_URL,
-      headers={"Content-Type": "application/json"},
+      headers={"Content-Type": "application/json", "User-Agent": "pyrisco/1.0"},
       json={"userName": "username", "password": "password"}
     )
 
