@@ -42,7 +42,8 @@ class RiscoCloud:
   async def _authenticated_post(self, url, body):
     headers = {
       "Content-Type": "application/json",
-      "authorization": "Bearer " + self._access_token,
+      "authorization": f"Bearer {self._access_token}",
+      "User-Agent": "pyrisco/1.0",
     }
     async with self._session.post(url, headers=headers, json=body) as resp:
       json = await resp.json()
@@ -81,7 +82,7 @@ class RiscoCloud:
           await self.login()
 
   async def _login_user_pass(self):
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "pyrisco/1.0"}
     body = {"userName": self._username, "password": self._password}
     try:
       async with self._session.post(
