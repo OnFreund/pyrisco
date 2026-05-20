@@ -144,6 +144,7 @@ class RiscoCloud:
       headers = {
         "authorization": f"Bearer {self._access_token}",
         "User-Agent": "pyrisco/1.0",
+        "sessionToken": self._session_id,
       }
       params = {"sessionToken": self._session_id}
       async with self._session.get(url, headers=headers, params=params) as resp:
