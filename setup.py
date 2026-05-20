@@ -17,8 +17,8 @@ DESCRIPTION = 'A python library to communicate with Risco Cloud.'
 URL = 'https://github.com/OnFreund/PyRisco'
 EMAIL = 'onfreund@gmail.com'
 AUTHOR = 'On Freund'
-REQUIRES_PYTHON = '>=3.7.0'
-VERSION = '0.6.8'
+REQUIRES_PYTHON = '>=3.11.0'
+VERSION = '0.7.0'
 
 REQUIRED = ['aiohttp']
 
@@ -110,7 +110,7 @@ setup(
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: Implementation :: CPython',
         'Programming Language :: Python :: Implementation :: PyPy'
     ],
