@@ -51,6 +51,11 @@ class Zone(BaseZone):
       return 'Y' in self._status
 
   @property
+  def low_battery(self):
+      """Does the zone have low battery."""
+      return 'b' in self._status
+
+  @property
   def groups(self):
       """Groups the zone belongs to."""
       return [GROUP_ID_TO_NAME[i] for i in range(0,4) if ((2**i) & self._groups) > 0]
