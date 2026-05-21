@@ -32,7 +32,7 @@ Pyrisco provides two independent ways to communicate with Risco alarm systems:
 
 ## Release flow
 
-1. Ensure all changes are merged to `master`.
+1. Ensure all changes are merged to the default branch.
 2. Push a git tag matching the new version: `git tag v0.7.1 && git push --tags`
 3. Create a GitHub Release from that tag (UI or `gh release create v0.7.1 --generate-notes`).
 4. The `release.yml` GitHub Actions workflow triggers automatically, builds the package, and publishes to PyPI.

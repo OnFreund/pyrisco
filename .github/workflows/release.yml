@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: write  # needed by actions/upload-artifact in the build job
 
 jobs:
   build:
@@ -38,6 +39,7 @@ jobs:
       url: https://pypi.org/p/pyrisco
     permissions:
       id-token: write  # OIDC for trusted publishing + PEP 740 attestations
+      actions: read    # needed by actions/download-artifact
     steps:
       - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e  # v4.2.1
         with:

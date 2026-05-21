@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pyrisco"
 dynamic = ["version"]
-description = "A python library to communicate with Risco Cloud."
+description = "A Python library to communicate with Risco Cloud."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "On Freund", email = "onfreund@gmail.com" }]
