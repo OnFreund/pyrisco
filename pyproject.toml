@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrisco"
+dynamic = ["version"]
+description = "A Python library to communicate with Risco Cloud."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "On Freund", email = "onfreund@gmail.com" }]
+requires-python = ">=3.11"
+dependencies = ["aiohttp"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[project.urls]
+Homepage = "https://github.com/OnFreund/PyRisco"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
+
+[tool.setuptools_scm]
+# version derived from git tags (e.g. v0.7.0 → 0.7.0)
