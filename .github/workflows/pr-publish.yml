@@ -111,7 +111,9 @@ jobs:
             '' \
             "**Home Assistant** — temporarily update your integration's \`manifest.json\`:" \
             '```json' \
-            "\"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]" \
+            '{' \
+            "  \"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]" \
+            '}' \
             '```' \
             'Revert to the pinned version after testing.' \
             > "$BODY_FILE"

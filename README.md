@@ -169,7 +169,9 @@ pip install https://github.com/OnFreund/pyrisco/releases/download/pr-42/pyrisco-
 
 **Home Assistant** — temporarily update your integration's `manifest.json` to use the PEP 508 URL form so HA doesn't overwrite it on restart:
 ```json
-"requirements": ["pyrisco @ https://github.com/OnFreund/pyrisco/releases/download/pr-42/pyrisco-0.0.0.dev42-py3-none-any.whl"]
+{
+  "requirements": ["pyrisco @ https://github.com/OnFreund/pyrisco/releases/download/pr-42/pyrisco-0.0.0.dev42-py3-none-any.whl"]
+}
 ```
 Replace `42` with the actual PR number. Revert to the pinned version (e.g. `pyrisco==0.7.1`) after testing.
 

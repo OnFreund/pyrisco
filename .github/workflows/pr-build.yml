@@ -8,6 +8,10 @@ concurrency:
   group: pr-build-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   build:
     name: Build PR wheel
@@ -22,7 +26,7 @@ jobs:
       - run: pip install build
 
       - name: Build wheel
-        run: python -m build
+        run: python -m build --wheel
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION: 0.0.0.dev${{ github.event.pull_request.number }}
 
