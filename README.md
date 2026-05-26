@@ -157,3 +157,24 @@ async def test_local():
 
 asyncio.run(test_local())
 ```
+
+## Testing PRs
+
+Every pull request automatically publishes a test build as a GitHub pre-release. You can find the install command in the PR comment posted by the bot, or on the [Releases page](https://github.com/OnFreund/pyrisco/releases) (pre-releases are tagged `pr-{number}`).
+
+**pip:**
+```
+pip install https://github.com/OnFreund/pyrisco/releases/download/pr-42/pyrisco-0.0.0.dev42-py3-none-any.whl
+```
+
+**Home Assistant** — temporarily update your integration's `manifest.json` to use the PEP 508 URL form so HA doesn't overwrite it on restart:
+```json
+{
+  "requirements": ["pyrisco @ https://github.com/OnFreund/pyrisco/releases/download/pr-42/pyrisco-0.0.0.dev42-py3-none-any.whl"]
+}
+```
+Replace `42` with the actual PR number. Revert to the pinned version (e.g. `pyrisco==0.7.1`) after testing.
+
+The install URL is stable for the lifetime of the PR — new commits to the same PR reuse the same tag and wheel name, so you don't need to update `manifest.json` if more commits are pushed.
+
+The pre-release and comment are deleted automatically when the PR is merged or closed.

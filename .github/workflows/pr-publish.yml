@@ -1,0 +1,121 @@
+name: PR Publish
+
+on:
+  workflow_run:
+    workflows: ["PR Build"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'PR Build run ID to publish (find it in the Actions URL)'
+        required: true
+
+concurrency:
+  group: pr-publish-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.run_id || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  publish:
+    name: Publish PR pre-release
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Resolve run ID
+        id: run
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "id=${{ github.event.inputs.run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e  # v4.2.1
+        with:
+          name: pr-wheel
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+          path: dist/
+
+      - name: Read PR metadata
+        id: pr
+        run: |
+          echo "number=$(cat dist/PR_NUMBER)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(cat dist/PR_HEAD_SHA)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate wheel
+        id: wheel
+        run: |
+          PR="$(cat dist/PR_NUMBER)"
+          WHL_COUNT=$(ls dist/pyrisco-0.0.0.dev${PR}-*.whl 2>/dev/null | wc -l)
+          if [ "$WHL_COUNT" -ne 1 ]; then
+            echo "Expected exactly 1 wheel matching pyrisco-0.0.0.dev${PR}-*.whl, found ${WHL_COUNT}:"
+            ls dist/ || true
+            exit 1
+          fi
+          WHEEL_FILE=$(ls dist/pyrisco-0.0.0.dev${PR}-*.whl)
+          echo "basename=$(basename "$WHEEL_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing PR release (if any)
+        run: gh release delete "pr-${{ steps.pr.outputs.number }}" --cleanup-tag --yes || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Create GitHub pre-release
+        run: |
+          gh release create "pr-${{ steps.pr.outputs.number }}" "dist/${{ steps.wheel.outputs.basename }}" \
+            --prerelease \
+            --target "${{ steps.pr.outputs.head_sha }}" \
+            --repo "${{ github.repository }}" \
+            --title "PR #${{ steps.pr.outputs.number }} test build" \
+            --notes "Test build for PR #${{ steps.pr.outputs.number }}."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Post PR comment (first build only)
+        run: |
+          PR="${{ steps.pr.outputs.number }}"
+          TAG="pr-${PR}"
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          WHEEL_URL="${BASE}/${{ steps.wheel.outputs.basename }}"
+
+          EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Comment already exists, skipping."
+            exit 0
+          fi
+
+          BODY_FILE=$(mktemp)
+          printf '%s\n' \
+            '<!-- pr-test-build -->' \
+            '## Test build ready' \
+            '' \
+            '**pip:**' \
+            '```' \
+            "pip install ${WHEEL_URL}" \
+            '```' \
+            '' \
+            "**Home Assistant** — temporarily update your integration's \`manifest.json\`:" \
+            '```json' \
+            '{' \
+            "  \"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]" \
+            '}' \
+            '```' \
+            'Revert to the pinned version after testing.' \
+            > "$BODY_FILE"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE"
+        env:
+          GH_TOKEN: ${{ github.token }}
