@@ -63,18 +63,22 @@ jobs:
             exit 0
           fi
 
-          gh pr comment "$PR" --repo "$REPO" --body "<!-- pr-test-build -->
-## Test build ready
-
-**pip:**
-\`\`\`
-pip install ${WHEEL_URL}
-\`\`\`
-
-**Home Assistant** — temporarily update your integration's \`manifest.json\`:
-\`\`\`json
-\"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]
-\`\`\`
-Revert to the pinned version after testing."
+          BODY_FILE=$(mktemp)
+          printf '%s\n' \
+            '<!-- pr-test-build -->' \
+            '## Test build ready' \
+            '' \
+            '**pip:**' \
+            '```' \
+            "pip install ${WHEEL_URL}" \
+            '```' \
+            '' \
+            "**Home Assistant** — temporarily update your integration's \`manifest.json\`:" \
+            '```json' \
+            "\"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]" \
+            '```' \
+            'Revert to the pinned version after testing.' \
+            > "$BODY_FILE"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE"
         env:
           GH_TOKEN: ${{ github.token }}
