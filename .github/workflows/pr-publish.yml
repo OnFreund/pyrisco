@@ -50,6 +50,19 @@ jobs:
           echo "number=$(cat dist/PR_NUMBER)" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(cat dist/PR_HEAD_SHA)" >> "$GITHUB_OUTPUT"
 
+      - name: Validate wheel
+        id: wheel
+        run: |
+          PR="$(cat dist/PR_NUMBER)"
+          WHL_COUNT=$(ls dist/pyrisco-0.0.0.dev${PR}-*.whl 2>/dev/null | wc -l)
+          if [ "$WHL_COUNT" -ne 1 ]; then
+            echo "Expected exactly 1 wheel matching pyrisco-0.0.0.dev${PR}-*.whl, found ${WHL_COUNT}:"
+            ls dist/ || true
+            exit 1
+          fi
+          WHEEL_FILE=$(ls dist/pyrisco-0.0.0.dev${PR}-*.whl)
+          echo "basename=$(basename "$WHEEL_FILE")" >> "$GITHUB_OUTPUT"
+
       - name: Delete existing PR release (if any)
         run: gh release delete "pr-${{ steps.pr.outputs.number }}" --cleanup-tag --yes || true
         env:
@@ -74,8 +87,7 @@ jobs:
           TAG="pr-${PR}"
           REPO="${{ github.repository }}"
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
-          WHEEL_BASENAME=$(basename dist/*.whl)
-          WHEEL_URL="${BASE}/${WHEEL_BASENAME}"
+          WHEEL_URL="${BASE}/${{ steps.wheel.outputs.basename }}"
 
           EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
             --paginate \
