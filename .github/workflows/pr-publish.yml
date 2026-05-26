@@ -83,7 +83,6 @@ jobs:
       - name: Post PR comment (first build only)
         run: |
           PR="${{ steps.pr.outputs.number }}"
-          VERSION="0.0.0.dev${PR}"
           TAG="pr-${PR}"
           REPO="${{ github.repository }}"
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
@@ -91,7 +90,7 @@ jobs:
 
           EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
             --paginate \
-            --jq '.[] | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
             | head -1)
 
           if [ -n "$EXISTING" ]; then
