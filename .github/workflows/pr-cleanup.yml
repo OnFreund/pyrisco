@@ -22,10 +22,9 @@ jobs:
 
       - name: Delete PR comment
         run: |
-          EXISTING=$(gh api "repos/${GH_REPO}/issues/${PR}/comments" \
+          gh api "repos/${GH_REPO}/issues/${PR}/comments" \
             --paginate \
             --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
-            | head -1)
-          if [ -n "$EXISTING" ]; then
-            gh api "repos/${GH_REPO}/issues/comments/${EXISTING}" -X DELETE
-          fi
+            | while read -r ID; do
+              gh api "repos/${GH_REPO}/issues/comments/${ID}" -X DELETE
+            done

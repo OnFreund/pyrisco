@@ -71,7 +71,7 @@ jobs:
 
       - name: Create GitHub pre-release
         run: |
-          gh release create "pr-${{ steps.pr.outputs.number }}" dist/*.whl \
+          gh release create "pr-${{ steps.pr.outputs.number }}" "dist/${{ steps.wheel.outputs.basename }}" \
             --prerelease \
             --target "${{ steps.pr.outputs.head_sha }}" \
             --repo "${{ github.repository }}" \
