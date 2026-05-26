@@ -23,7 +23,9 @@ jobs:
       - name: Delete PR comment
         run: |
           EXISTING=$(gh api "repos/${GH_REPO}/issues/${PR}/comments" \
-            --jq '[.[] | select(.body | startswith("<!-- pr-test-build -->"))] | first | .id // empty')
+            --paginate \
+            --jq '.[] | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
+            | head -1)
           if [ -n "$EXISTING" ]; then
             gh api "repos/${GH_REPO}/issues/comments/${EXISTING}" -X DELETE
           fi

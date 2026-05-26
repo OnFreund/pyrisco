@@ -11,7 +11,8 @@ on:
         required: true
 
 concurrency:
-  group: pr-publish-${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+  group: pr-publish-${{ github.event.workflow_run.pull_requests[0].number || github.event.inputs.run_id || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -43,9 +44,11 @@ jobs:
           github-token: ${{ github.token }}
           path: dist/
 
-      - name: Read PR number
+      - name: Read PR metadata
         id: pr
-        run: echo "number=$(cat dist/PR_NUMBER)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "number=$(cat dist/PR_NUMBER)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(cat dist/PR_HEAD_SHA)" >> "$GITHUB_OUTPUT"
 
       - name: Delete existing PR release (if any)
         run: gh release delete "pr-${{ steps.pr.outputs.number }}" --cleanup-tag --yes || true
@@ -57,6 +60,7 @@ jobs:
         run: |
           gh release create "pr-${{ steps.pr.outputs.number }}" dist/*.whl \
             --prerelease \
+            --target "${{ steps.pr.outputs.head_sha }}" \
             --repo "${{ github.repository }}" \
             --title "PR #${{ steps.pr.outputs.number }} test build" \
             --notes "Test build for PR #${{ steps.pr.outputs.number }}."
@@ -70,10 +74,13 @@ jobs:
           TAG="pr-${PR}"
           REPO="${{ github.repository }}"
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
-          WHEEL_URL="${BASE}/pyrisco-${VERSION}-py3-none-any.whl"
+          WHEEL_BASENAME=$(basename dist/*.whl)
+          WHEEL_URL="${BASE}/${WHEEL_BASENAME}"
 
           EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
-            --jq '[.[] | select(.body | startswith("<!-- pr-test-build -->"))] | first | .id // empty')
+            --paginate \
+            --jq '.[] | select(.body | startswith("<!-- pr-test-build -->")) | .id' \
+            | head -1)
 
           if [ -n "$EXISTING" ]; then
             echo "Comment already exists, skipping."

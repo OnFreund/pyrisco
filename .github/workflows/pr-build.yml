@@ -26,8 +26,10 @@ jobs:
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION: 0.0.0.dev${{ github.event.pull_request.number }}
 
-      - name: Save PR number
-        run: echo "${{ github.event.pull_request.number }}" > dist/PR_NUMBER
+      - name: Save PR metadata
+        run: |
+          echo "${{ github.event.pull_request.number }}" > dist/PR_NUMBER
+          echo "${{ github.event.pull_request.head.sha }}" > dist/PR_HEAD_SHA
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
