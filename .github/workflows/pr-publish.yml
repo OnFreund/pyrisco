@@ -4,9 +4,14 @@ on:
   workflow_run:
     workflows: ["PR Build"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'PR Build run ID to publish (find it in the Actions URL)'
+        required: true
 
 concurrency:
-  group: pr-publish-${{ github.event.workflow_run.id }}
+  group: pr-publish-${{ github.event.workflow_run.id || github.event.inputs.run_id }}
 
 permissions:
   contents: write
@@ -17,12 +22,23 @@ jobs:
   publish:
     name: Publish PR pre-release
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
+      - name: Resolve run ID
+        id: run
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "id=${{ github.event.inputs.run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e  # v4.2.1
         with:
           name: pr-wheel
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.run.outputs.id }}
           github-token: ${{ github.token }}
           path: dist/
 
