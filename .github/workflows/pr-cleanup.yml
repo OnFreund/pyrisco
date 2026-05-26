@@ -1,0 +1,29 @@
+name: PR Cleanup
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  cleanup:
+    name: Delete PR pre-release
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Delete PR release and tag
+        run: gh release delete "pr-${PR}" --cleanup-tag --yes || true
+
+      - name: Delete PR comment
+        run: |
+          EXISTING=$(gh api "repos/${GH_REPO}/issues/${PR}/comments" \
+            --jq '[.[] | select(.body | startswith("<!-- pr-test-build -->"))] | first | .id // empty')
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/${GH_REPO}/issues/comments/${EXISTING}" -X DELETE
+          fi

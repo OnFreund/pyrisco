@@ -1,0 +1,80 @@
+name: PR Publish
+
+on:
+  workflow_run:
+    workflows: ["PR Build"]
+    types: [completed]
+
+concurrency:
+  group: pr-publish-${{ github.event.workflow_run.id }}
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+jobs:
+  publish:
+    name: Publish PR pre-release
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e  # v4.2.1
+        with:
+          name: pr-wheel
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: dist/
+
+      - name: Read PR number
+        id: pr
+        run: echo "number=$(cat dist/PR_NUMBER)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing PR release (if any)
+        run: gh release delete "pr-${{ steps.pr.outputs.number }}" --cleanup-tag --yes || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Create GitHub pre-release
+        run: |
+          gh release create "pr-${{ steps.pr.outputs.number }}" dist/*.whl \
+            --prerelease \
+            --repo "${{ github.repository }}" \
+            --title "PR #${{ steps.pr.outputs.number }} test build" \
+            --notes "Test build for PR #${{ steps.pr.outputs.number }}."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Post PR comment (first build only)
+        run: |
+          PR="${{ steps.pr.outputs.number }}"
+          VERSION="0.0.0.dev${PR}"
+          TAG="pr-${PR}"
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          WHEEL_URL="${BASE}/pyrisco-${VERSION}-py3-none-any.whl"
+
+          EXISTING=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+            --jq '[.[] | select(.body | startswith("<!-- pr-test-build -->"))] | first | .id // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Comment already exists, skipping."
+            exit 0
+          fi
+
+          gh pr comment "$PR" --repo "$REPO" --body "<!-- pr-test-build -->
+## Test build ready
+
+**pip:**
+\`\`\`
+pip install ${WHEEL_URL}
+\`\`\`
+
+**Home Assistant** — temporarily update your integration's \`manifest.json\`:
+\`\`\`json
+\"requirements\": [\"pyrisco @ ${WHEEL_URL}\"]
+\`\`\`
+Revert to the pinned version after testing."
+        env:
+          GH_TOKEN: ${{ github.token }}
