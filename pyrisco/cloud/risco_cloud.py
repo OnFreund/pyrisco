@@ -279,6 +279,8 @@ class RiscoCloud:
       "offset": 0,
     }
     response, assumed_control_panel_state = await self._site_post(EVENTS_URL, body)
+    if not response:
+      return []
     return [Event(e) for e in response["controlPanelEventsList"]]
 
   async def bypass_zone(self, zone, bypass):
