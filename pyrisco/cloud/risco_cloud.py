@@ -43,7 +43,9 @@ class RiscoCloud:
     self._created_session = False
     self._state_handlers = []
     self._error_handlers = []
+    self._event_handlers = []
     self._last_status_update = None
+    self._last_event_update = None
     self._latest_state = None
     self._subscription_task = None
 
@@ -167,9 +169,9 @@ class RiscoCloud:
         await handler(e)
 
   async def _handle_runtime_update(self, data):
-    if data.get("isOffline"):
+    if data.get("IsOffline"):
       return
-    ts_str = data.get("lastStatusUpdate")
+    ts_str = data.get("LastStatusUpdate")
     if not ts_str:
       return
     update_time = datetime.fromisoformat(ts_str)
@@ -181,6 +183,14 @@ class RiscoCloud:
     self._latest_state = alarm
     for handler in list(self._state_handlers):
       await handler(alarm)
+    event_ts_str = data.get("LastEventUpdated")
+    if event_ts_str:
+      event_time = datetime.fromisoformat(event_ts_str)
+      if self._last_event_update is None or event_time > self._last_event_update:
+        events = await self.get_events(self._last_event_update)
+        self._last_event_update = event_time
+        for handler in list(self._event_handlers):
+          await handler(events)
 
   async def close(self):
     """Close the connection."""
@@ -214,6 +224,10 @@ class RiscoCloud:
   def add_error_handler(self, handler):
     """Register an async callback for SSE errors. Returns a remover callable."""
     return RiscoCloud._add_handler(self._error_handlers, handler)
+
+  def add_event_handler(self, handler):
+    """Register an async callback for event log updates via SSE. Returns a remover callable."""
+    return RiscoCloud._add_handler(self._event_handlers, handler)
 
   async def subscribe_states(self):
     """Start listening for push state updates via SSE."""

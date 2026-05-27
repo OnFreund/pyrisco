@@ -214,7 +214,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_session = MockClientSession.return_value
     mock_resp = MagicMock()
     mock_resp.content = _make_sse_stream(
-      ("runtimeUpdate", {"lastStatusUpdate": "2024-01-01T12:00:00Z"}),
+      ("runtimeUpdate", {"LastStatusUpdate": "2024-01-01T12:00:00Z"}),
     )
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -248,8 +248,8 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_session = MockClientSession.return_value
     mock_resp = MagicMock()
     mock_resp.content = _make_sse_stream(
-      ("runtimeUpdate", {"lastStatusUpdate": "2024-01-01T12:00:00Z"}),
-      ("runtimeUpdate", {"lastStatusUpdate": "2024-01-01T12:00:00Z"}),
+      ("runtimeUpdate", {"LastStatusUpdate": "2024-01-01T12:00:00Z"}),
+      ("runtimeUpdate", {"LastStatusUpdate": "2024-01-01T12:00:00Z"}),
     )
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -288,7 +288,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_session = MockClientSession.return_value
     mock_resp = MagicMock()
     mock_resp.content = _make_sse_stream(
-      ("runtimeUpdate", {"lastStatusUpdate": "2024-01-01T12:00:00Z", "isOffline": True}),
+      ("runtimeUpdate", {"LastStatusUpdate": "2024-01-01T12:00:00Z", "IsOffline": True}),
     )
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -338,6 +338,80 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(len(received_errors), 1)
     self.assertIs(received_errors[0], error)
+
+
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
+  @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
+  async def test_subscribe_states_calls_event_handler(self, MockClientSession, mock_site_post):
+    state_payload = {"partitions": [], "zones": []}
+    event_payload = {"controlPanelEventsList": []}
+    mock_site_post.side_effect = [
+      ({"state": {"status": state_payload}}, False),
+      (event_payload, False),
+    ]
+
+    mock_session = MockClientSession.return_value
+    mock_resp = MagicMock()
+    mock_resp.content = _make_sse_stream(
+      ("runtimeUpdate", {
+        "LastStatusUpdate": "2024-01-01T12:00:00Z",
+        "LastEventUpdated": "2024-01-01T12:00:00Z",
+      }),
+    )
+    mock_get_cm = MagicMock()
+    mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get.return_value = mock_get_cm
+
+    received_events = []
+    async def on_event(events):
+      received_events.append(events)
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    risco_cloud._session = mock_session
+    risco_cloud.add_event_handler(on_event)
+
+    await risco_cloud.subscribe_states()
+    await risco_cloud._subscription_task
+
+    self.assertEqual(len(received_events), 1)
+    self.assertIsInstance(received_events[0], list)
+
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
+  @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
+  async def test_subscribe_states_no_event_handler_when_no_last_event_updated(self, MockClientSession, mock_site_post):
+    state_payload = {"partitions": [], "zones": []}
+    mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
+
+    mock_session = MockClientSession.return_value
+    mock_resp = MagicMock()
+    mock_resp.content = _make_sse_stream(
+      ("runtimeUpdate", {"LastStatusUpdate": "2024-01-01T12:00:00Z"}),
+    )
+    mock_get_cm = MagicMock()
+    mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get.return_value = mock_get_cm
+
+    received_events = []
+    async def on_event(events):
+      received_events.append(events)
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    risco_cloud._session = mock_session
+    risco_cloud.add_event_handler(on_event)
+
+    await risco_cloud.subscribe_states()
+    await risco_cloud._subscription_task
+
+    self.assertEqual(len(received_events), 0)
+    self.assertEqual(mock_site_post.call_count, 1)  # only the state fetch, no event fetch
 
 
 if __name__ == '__main__':

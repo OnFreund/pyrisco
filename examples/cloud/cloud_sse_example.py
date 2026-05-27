@@ -12,6 +12,12 @@ async def on_state(alarm):
         print(f"  Zone {zone_id} ({zone.name}): triggered={zone.triggered}, bypassed={zone.bypassed}")
 
 
+async def on_event(events):
+    print(f"Received {len(events)} new event(s)")
+    for event in events:
+        print(f"  [{event.time}] {event.text}")
+
+
 async def on_error(error):
     print(f"SSE error: {error}, reconnecting in 5s...")
     await asyncio.sleep(5)
@@ -22,6 +28,7 @@ async def on_error(error):
 async def main():
     await risco.login()
     risco.add_state_handler(on_state)
+    risco.add_event_handler(on_event)
     risco.add_error_handler(on_error)
     await risco.subscribe_states()
     await asyncio.Future()  # run forever
