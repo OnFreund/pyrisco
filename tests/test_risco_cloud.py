@@ -338,7 +338,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud._subscription_task
 
     self.assertEqual(len(received_events), 1)
-    mock_site_post.call_count == 1  # only event fetch, no state fetch
+    self.assertEqual(mock_site_post.call_count, 1)  # only event fetch, no state fetch
 
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_subscribe_states_calls_error_handler(self, MockClientSession):
