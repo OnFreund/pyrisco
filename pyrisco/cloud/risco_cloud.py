@@ -172,17 +172,15 @@ class RiscoCloud:
     if data.get("IsOffline"):
       return
     ts_str = data.get("LastStatusUpdate")
-    if not ts_str:
-      return
-    update_time = datetime.fromisoformat(ts_str)
-    if self._last_status_update is not None and update_time <= self._last_status_update:
-      return
-    resp, assumed = await self._site_post(STATE_URL, {})
-    alarm = Alarm(self, resp["state"]["status"], assumed)
-    self._last_status_update = update_time
-    self._latest_state = alarm
-    for handler in list(self._state_handlers):
-      await handler(alarm)
+    if ts_str:
+      update_time = datetime.fromisoformat(ts_str)
+      if self._last_status_update is None or update_time > self._last_status_update:
+        resp, assumed = await self._site_post(STATE_URL, {})
+        alarm = Alarm(self, resp["state"]["status"], assumed)
+        self._last_status_update = update_time
+        self._latest_state = alarm
+        for handler in list(self._state_handlers):
+          await handler(alarm)
     event_ts_str = data.get("LastEventUpdated")
     if event_ts_str and self._event_handlers:
       event_time = datetime.fromisoformat(event_ts_str)
@@ -280,7 +278,7 @@ class RiscoCloud:
       "offset": 0,
     }
     response, assumed_control_panel_state = await self._site_post(EVENTS_URL, body)
-    if not response:
+    if response is None:
       return []
     return [Event(e) for e in response["controlPanelEventsList"]]
 

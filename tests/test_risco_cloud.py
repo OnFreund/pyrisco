@@ -306,6 +306,40 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     mock_site_post.assert_not_called()
 
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
+  @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
+  async def test_subscribe_states_event_handler_fires_without_status_update(self, MockClientSession, mock_site_post):
+    """LastEventUpdated should trigger the event handler even when LastStatusUpdate is absent."""
+    event_payload = {"controlPanelEventsList": []}
+    mock_site_post.return_value = (event_payload, False)
+
+    mock_session = MockClientSession.return_value
+    mock_resp = MagicMock()
+    mock_resp.content = _make_sse_stream(
+      ("runtimeUpdate", {"LastEventUpdated": "2024-01-01T12:00:00Z"}),
+    )
+    mock_get_cm = MagicMock()
+    mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get.return_value = mock_get_cm
+
+    received_events = []
+    async def on_event(events):
+      received_events.append(events)
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    risco_cloud._session = mock_session
+    risco_cloud.add_event_handler(on_event)
+
+    await risco_cloud.subscribe_states()
+    await risco_cloud._subscription_task
+
+    self.assertEqual(len(received_events), 1)
+    mock_site_post.call_count == 1  # only event fetch, no state fetch
+
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_subscribe_states_calls_error_handler(self, MockClientSession):
     mock_session = MockClientSession.return_value
