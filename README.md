@@ -33,11 +33,16 @@ async def on_event(events):
     for event in events:
         print(event.text)
 
+async def _restart():
+    await r.close()
+    await r.login()
+    await r.subscribe_states()
+
 async def on_error(error):
     if isinstance(error, MaxRetriesError):
-        # All reconnect attempts exhausted — re-login and re-subscribe
-        await r.login()
-        await r.subscribe_states()
+        # Schedule restart outside the SSE task — calling close() from within
+        # the task would cancel it before login() could complete
+        asyncio.create_task(_restart())
     else:
         # Transient error — pyrisco will reconnect automatically with backoff
         print(f"SSE error: {error}")

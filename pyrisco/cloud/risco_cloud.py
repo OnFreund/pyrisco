@@ -10,6 +10,11 @@ from .event import Event
 from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, MaxRetriesError, GROUP_ID_TO_NAME
 
 
+def _parse_timestamp(ts_str):
+  """Parse an ISO 8601 timestamp, accepting both 'Z' and '+00:00' UTC suffixes."""
+  return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
 SITE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/GetAll"
 PIN_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/Login"
@@ -194,7 +199,7 @@ class RiscoCloud:
       return
     ts_str = data.get("LastStatusUpdate")
     if ts_str:
-      update_time = datetime.fromisoformat(ts_str)
+      update_time = _parse_timestamp(ts_str)
       if self._last_status_update is None or update_time > self._last_status_update:
         resp, assumed = await self._site_post(STATE_URL, {})
         alarm = Alarm(self, resp["state"]["status"], assumed)
@@ -204,8 +209,8 @@ class RiscoCloud:
           await handler(alarm)
     event_ts_str = data.get("LastEventUpdated")
     if event_ts_str and self._event_handlers:
-      event_time = datetime.fromisoformat(event_ts_str)
-      last_event_time = datetime.fromisoformat(self._last_event_update) if self._last_event_update else None
+      event_time = _parse_timestamp(event_ts_str)
+      last_event_time = _parse_timestamp(self._last_event_update) if self._last_event_update else None
       if last_event_time is None or event_time > last_event_time:
         events = await self.get_events(self._last_event_update)
         self._last_event_update = event_ts_str

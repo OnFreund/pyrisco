@@ -18,12 +18,19 @@ async def on_event(events):
         print(f"  [{event.time}] {event.text}")
 
 
+async def _restart():
+    """Re-login and re-subscribe after all reconnect attempts are exhausted."""
+    await risco.close()
+    await risco.login()
+    await risco.subscribe_states()
+
+
 async def on_error(error):
     if isinstance(error, MaxRetriesError):
-        # All reconnect attempts exhausted — re-login and re-subscribe
-        print(f"Gave up reconnecting ({error.last_error}), re-logging in...")
-        await risco.login()
-        await risco.subscribe_states()
+        # All reconnect attempts exhausted — schedule a fresh login outside the
+        # current SSE task (calling close() from within the task would cancel it)
+        print(f"Gave up reconnecting ({error.last_error}), restarting...")
+        asyncio.create_task(_restart())
     else:
         # Transient error — pyrisco will reconnect automatically with backoff
         print(f"SSE error: {error} (reconnecting automatically)")
