@@ -191,10 +191,10 @@ class RiscoCloud:
     event_ts_str = data.get("LastEventUpdated")
     if event_ts_str and self._event_handlers:
       event_time = datetime.fromisoformat(event_ts_str)
-      if self._last_event_update is None or event_time > self._last_event_update:
-        newer_than = self._last_event_update.isoformat() if self._last_event_update else None
-        events = await self.get_events(newer_than)
-        self._last_event_update = event_time
+      last_event_time = datetime.fromisoformat(self._last_event_update) if self._last_event_update else None
+      if last_event_time is None or event_time > last_event_time:
+        events = await self.get_events(self._last_event_update)
+        self._last_event_update = event_ts_str
         for handler in list(self._event_handlers):
           await handler(events)
 
