@@ -2,7 +2,8 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch, AsyncMock, MagicMock
-from pyrisco.cloud.risco_cloud import RiscoCloud, UnauthorizedError, OperationError, RetryableOperationError, RECONNECT_DELAY
+from pyrisco.cloud.risco_cloud import RiscoCloud, UnauthorizedError, OperationError, RetryableOperationError, RECONNECT_INITIAL_DELAY, RECONNECT_MAX_ATTEMPTS
+from pyrisco.common import MaxRetriesError
 from pyrisco.cloud.alarm import Alarm
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
@@ -446,7 +447,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(len(received_errors), 1)
     self.assertIs(received_errors[0], error)
-    mock_sleep.assert_awaited_once_with(RECONNECT_DELAY)
+    mock_sleep.assert_awaited_once_with(RECONNECT_INITIAL_DELAY)  # first attempt: 1s
 
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
@@ -562,6 +563,41 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(len(received_events), 0)
     self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + state fetch from SSE, no event fetch
+
+
+  @patch('pyrisco.cloud.risco_cloud.asyncio.sleep', new_callable=AsyncMock)
+  @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
+  async def test_subscribe_states_max_retries_exceeded(self, MockClientSession, mock_sleep):
+    """After RECONNECT_MAX_ATTEMPTS failures the loop gives up and notifies via MaxRetriesError."""
+    mock_session = MockClientSession.return_value
+    error = RuntimeError("connection failed")
+    mock_session.get.side_effect = error
+
+    received_errors = []
+    async def on_error(err):
+      received_errors.append(err)
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    risco_cloud._session = mock_session
+    risco_cloud.add_error_handler(on_error)
+
+    await risco_cloud.subscribe_states()
+    await risco_cloud._subscription_task  # completes normally after giving up
+
+    # Error handler called once per attempt: first N-1 with the raw error, last with MaxRetriesError
+    self.assertEqual(len(received_errors), RECONNECT_MAX_ATTEMPTS)
+    for i in range(RECONNECT_MAX_ATTEMPTS - 1):
+      self.assertIs(received_errors[i], error)
+    self.assertIsInstance(received_errors[-1], MaxRetriesError)
+    self.assertIs(received_errors[-1].last_error, error)
+
+    # Sleep called with exponential backoff (no sleep on final attempt)
+    self.assertEqual(mock_sleep.await_count, RECONNECT_MAX_ATTEMPTS - 1)
+    for i, expected_delay in enumerate([1, 2, 4, 8]):
+      self.assertEqual(mock_sleep.await_args_list[i].args[0], expected_delay)
 
 
 if __name__ == '__main__':

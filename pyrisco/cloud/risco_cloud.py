@@ -7,7 +7,7 @@ from datetime import datetime
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, MaxRetriesError, GROUP_ID_TO_NAME
 
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
@@ -23,7 +23,9 @@ SSE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/sse/c
 
 NUM_RETRIES = 3
 RETRYABLE_RESULT_CODE = 72
-RECONNECT_DELAY = 30
+RECONNECT_INITIAL_DELAY = 1
+RECONNECT_MAX_DELAY = 60
+RECONNECT_MAX_ATTEMPTS = 5
 
 
 class RiscoCloud:
@@ -142,6 +144,7 @@ class RiscoCloud:
     return Alarm(self, resp, assumed_control_panel_state)
 
   async def _sse_loop(self):
+    attempt = 0
     while True:
       try:
         url = SSE_URL % self._site_id
@@ -171,12 +174,19 @@ class RiscoCloud:
               await self._handle_runtime_update(json.loads(data_line))
               event_type = None
               data_line = None
+        attempt = 0  # successful connection — reset backoff for next drop
       except asyncio.CancelledError:
         raise
       except Exception as e:
+        attempt += 1
+        if attempt >= RECONNECT_MAX_ATTEMPTS:
+          for handler in list(self._error_handlers):
+            await handler(MaxRetriesError(e))
+          return
         for handler in list(self._error_handlers):
           await handler(e)
-        await asyncio.sleep(RECONNECT_DELAY)
+        delay = min(RECONNECT_INITIAL_DELAY * (2 ** (attempt - 1)), RECONNECT_MAX_DELAY)
+        await asyncio.sleep(delay)
 
   async def _handle_runtime_update(self, data):
     if data.get("IsOffline"):

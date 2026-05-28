@@ -147,3 +147,11 @@ class OperationError(Exception):
 
 class RetryableOperationError(OperationError):
   """Exception to indicate an error in operation that can be retried and might succeed."""
+
+
+class MaxRetriesError(Exception):
+  """Raised when the SSE connection fails and all reconnect attempts are exhausted."""
+
+  def __init__(self, last_error):
+    self.last_error = last_error
+    super().__init__(f"SSE reconnect failed after maximum attempts: {last_error}")
