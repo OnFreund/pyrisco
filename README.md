@@ -21,7 +21,7 @@ Pyrisco can subscribe to Risco Cloud's Server-Sent Events stream and push state 
 
 ```python
 import asyncio
-from pyrisco import RiscoCloud
+from pyrisco import RiscoCloud, MaxRetriesError
 
 r = RiscoCloud("<username>", "<password>", "<pincode>")
 
@@ -29,15 +29,23 @@ async def on_state(alarm):
     print(alarm.partitions[0].armed)
     print(alarm.zones[0].triggered)
 
+async def on_event(events):
+    for event in events:
+        print(event.text)
+
 async def on_error(error):
-    print(f"SSE error: {error}, reconnecting in 5s...")
-    await asyncio.sleep(5)
-    await r.login()
-    await r.subscribe_states()
+    if isinstance(error, MaxRetriesError):
+        # All reconnect attempts exhausted — re-login and re-subscribe
+        await r.login()
+        await r.subscribe_states()
+    else:
+        # Transient error — pyrisco will reconnect automatically with backoff
+        print(f"SSE error: {error}")
 
 async def main():
     await r.login()
     r.add_state_handler(on_state)
+    r.add_event_handler(on_event)
     r.add_error_handler(on_error)
     await r.subscribe_states()
     await asyncio.Future()  # run forever
@@ -45,9 +53,11 @@ async def main():
 asyncio.run(main())
 ```
 
-Both `add_state_handler` and `add_error_handler` return a callable that removes the handler when called.
+`add_state_handler`, `add_event_handler`, and `add_error_handler` each return a callable that removes the handler when called.
 
-After `subscribe_states()` is started, calls to `get_state()` return the latest cached state without making a network request.
+On connection errors pyrisco reconnects automatically with exponential backoff (1 s, 2 s, 4 s, 8 s…). After the maximum number of attempts the error handler is called with a `MaxRetriesError` wrapping the last exception — the recommended response is to re-login and re-subscribe.
+
+After `subscribe_states()` is started, the state handler is called immediately with the current state, and subsequent calls to `get_state()` return the latest cached state without making a network request.
 
 #### Polling
 

@@ -1,5 +1,5 @@
 import asyncio
-from pyrisco import RiscoCloud
+from pyrisco import RiscoCloud, MaxRetriesError
 
 risco = RiscoCloud("user@example.com", "password", "1234")
 
@@ -19,7 +19,14 @@ async def on_event(events):
 
 
 async def on_error(error):
-    print(f"SSE error: {error} (will reconnect automatically)")
+    if isinstance(error, MaxRetriesError):
+        # All reconnect attempts exhausted — re-login and re-subscribe
+        print(f"Gave up reconnecting ({error.last_error}), re-logging in...")
+        await risco.login()
+        await risco.subscribe_states()
+    else:
+        # Transient error — pyrisco will reconnect automatically with backoff
+        print(f"SSE error: {error} (reconnecting automatically)")
 
 
 async def main():
