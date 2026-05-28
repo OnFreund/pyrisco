@@ -19,10 +19,7 @@ async def on_event(events):
 
 
 async def on_error(error):
-    print(f"SSE error: {error}, reconnecting in 5s...")
-    await asyncio.sleep(5)
-    await risco.login()
-    await risco.subscribe_states()
+    print(f"SSE error: {error} (will reconnect automatically)")
 
 
 async def main():

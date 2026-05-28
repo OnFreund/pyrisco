@@ -23,6 +23,7 @@ SSE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/sse/c
 
 NUM_RETRIES = 3
 RETRYABLE_RESULT_CODE = 72
+RECONNECT_DELAY = 30
 
 
 class RiscoCloud:
@@ -141,39 +142,41 @@ class RiscoCloud:
     return Alarm(self, resp, assumed_control_panel_state)
 
   async def _sse_loop(self):
-    try:
-      url = SSE_URL % self._site_id
-      headers = {
-        "authorization": f"Bearer {self._access_token}",
-        "User-Agent": "pyrisco/1.0",
-        "sessionToken": self._session_id,
-      }
-      params = {"sessionToken": self._session_id}
-      async with self._session.get(url, headers=headers, params=params) as resp:
-        # SSE connection is now open — fetch initial state before consuming
-        # messages so no state changes in between can be missed.
-        initial_resp, assumed = await self._site_post(STATE_URL, {})
-        alarm = Alarm(self, initial_resp["state"]["status"], assumed)
-        self._latest_state = alarm
-        for handler in list(self._state_handlers):
-          await handler(alarm)
-        event_type = None
-        data_line = None
-        async for line_bytes in resp.content:
-          line = line_bytes.decode("utf-8").rstrip("\r\n")
-          if line.startswith("event:"):
-            event_type = line[6:].strip()
-          elif line.startswith("data:"):
-            data_line = line[5:].strip()
-          elif line == "" and event_type == "runtimeUpdate" and data_line:
-            await self._handle_runtime_update(json.loads(data_line))
-            event_type = None
-            data_line = None
-    except asyncio.CancelledError:
-      raise
-    except Exception as e:
-      for handler in list(self._error_handlers):
-        await handler(e)
+    while True:
+      try:
+        url = SSE_URL % self._site_id
+        headers = {
+          "authorization": f"Bearer {self._access_token}",
+          "User-Agent": "pyrisco/1.0",
+          "sessionToken": self._session_id,
+        }
+        params = {"sessionToken": self._session_id}
+        async with self._session.get(url, headers=headers, params=params) as resp:
+          # SSE connection is now open — fetch initial state before consuming
+          # messages so no state changes in between can be missed.
+          initial_resp, assumed = await self._site_post(STATE_URL, {})
+          alarm = Alarm(self, initial_resp["state"]["status"], assumed)
+          self._latest_state = alarm
+          for handler in list(self._state_handlers):
+            await handler(alarm)
+          event_type = None
+          data_line = None
+          async for line_bytes in resp.content:
+            line = line_bytes.decode("utf-8").rstrip("\r\n")
+            if line.startswith("event:"):
+              event_type = line[6:].strip()
+            elif line.startswith("data:"):
+              data_line = line[5:].strip()
+            elif line == "" and event_type == "runtimeUpdate" and data_line:
+              await self._handle_runtime_update(json.loads(data_line))
+              event_type = None
+              data_line = None
+      except asyncio.CancelledError:
+        raise
+      except Exception as e:
+        for handler in list(self._error_handlers):
+          await handler(e)
+        await asyncio.sleep(RECONNECT_DELAY)
 
   async def _handle_runtime_update(self, data):
     if data.get("IsOffline"):

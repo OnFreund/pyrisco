@@ -2,10 +2,31 @@ import asyncio
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch, AsyncMock, MagicMock
-from pyrisco.cloud.risco_cloud import RiscoCloud, UnauthorizedError, OperationError, RetryableOperationError
+from pyrisco.cloud.risco_cloud import RiscoCloud, UnauthorizedError, OperationError, RetryableOperationError, RECONNECT_DELAY
 from pyrisco.cloud.alarm import Alarm
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
+
+
+def _make_cancel_cm():
+  """Return a mock async context manager that raises CancelledError on enter.
+
+  Used to stop the SSE reconnect loop cleanly in tests: set the second
+  session.get() side_effect entry to _make_cancel_cm() so the loop exits
+  as soon as it tries to reconnect after the test stream ends.
+  """
+  cm = MagicMock()
+  cm.__aenter__ = AsyncMock(side_effect=asyncio.CancelledError)
+  cm.__aexit__ = AsyncMock(return_value=None)
+  return cm
+
+
+async def _run_sse_task(risco_cloud):
+  """Await the SSE subscription task, absorbing the CancelledError from reconnect."""
+  try:
+    await risco_cloud._subscription_task
+  except asyncio.CancelledError:
+    pass
 
 
 def _make_sse_stream(*events):
@@ -218,7 +239,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received = []
     async def on_state(alarm):
@@ -232,7 +253,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_state_handler(on_state)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received), 1)
     self.assertIsInstance(received[0], Alarm)
@@ -253,7 +274,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received = []
     async def on_state(alarm):
@@ -267,7 +288,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_state_handler(on_state)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received), 2)  # initial fetch + SSE-triggered fetch
     self.assertIsInstance(received[0], Alarm)
@@ -288,7 +309,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     risco_cloud = RiscoCloud("username", "password", "pin")
     risco_cloud._access_token = "mock_access_token"
@@ -297,7 +318,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud._session = mock_session
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     # initial fetch + first SSE message; second SSE message has same timestamp so skipped
     self.assertEqual(mock_site_post.call_count, 2)
@@ -331,7 +352,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     risco_cloud = RiscoCloud("username", "password", "pin")
     risco_cloud._access_token = "mock_access_token"
@@ -340,7 +361,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud._session = mock_session
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     # Only the initial fetch; the SSE message is skipped because IsOffline=True
     self.assertEqual(mock_site_post.call_count, 1)
@@ -364,7 +385,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received_events = []
     async def on_event(events):
@@ -378,16 +399,19 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_event_handler(on_event)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received_events), 1)
     self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + event fetch
 
+  @patch('pyrisco.cloud.risco_cloud.asyncio.sleep', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
-  async def test_subscribe_states_calls_error_handler(self, MockClientSession, mock_site_post):
+  async def test_subscribe_states_calls_error_handler(self, MockClientSession, mock_site_post, mock_sleep):
     state_payload = {"partitions": [], "zones": []}
     mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
+    # Make sleep raise CancelledError so the loop stops cleanly after the first retry delay
+    mock_sleep.side_effect = asyncio.CancelledError
 
     mock_session = MockClientSession.return_value
     error = RuntimeError("stream broken")
@@ -415,10 +439,14 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_error_handler(on_error)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    try:
+      await risco_cloud._subscription_task
+    except asyncio.CancelledError:
+      pass
 
     self.assertEqual(len(received_errors), 1)
     self.assertIs(received_errors[0], error)
+    mock_sleep.assert_awaited_once_with(RECONNECT_DELAY)
 
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
@@ -442,7 +470,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received_events = []
     async def on_event(events):
@@ -456,7 +484,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_event_handler(on_event)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received_events), 1)
     self.assertEqual(received_events[0], [])
@@ -483,7 +511,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received_events = []
     async def on_event(events):
@@ -497,7 +525,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_event_handler(on_event)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received_events), 1)
     self.assertIsInstance(received_events[0], list)
@@ -516,7 +544,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     mock_get_cm = MagicMock()
     mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_get_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_session.get.return_value = mock_get_cm
+    mock_session.get.side_effect = [mock_get_cm, _make_cancel_cm()]
 
     received_events = []
     async def on_event(events):
@@ -530,7 +558,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     risco_cloud.add_event_handler(on_event)
 
     await risco_cloud.subscribe_states()
-    await risco_cloud._subscription_task
+    await _run_sse_task(risco_cloud)
 
     self.assertEqual(len(received_events), 0)
     self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + state fetch from SSE, no event fetch
