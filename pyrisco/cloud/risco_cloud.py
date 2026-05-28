@@ -103,7 +103,8 @@ class RiscoCloud:
         if isinstance(e, RetryableOperationError):
           from_control_panel = False
         elif isinstance(e, UnauthorizedError):
-          await self._relogin()
+          await self.close()
+          await self.login()
 
   async def _login_user_pass(self):
     headers = {"Content-Type": "application/json", "User-Agent": "pyrisco/1.0"}
@@ -143,13 +144,6 @@ class RiscoCloud:
       else:
         self._session = session
 
-  async def _relogin(self):
-    """Refresh credentials in-place without closing the session or the SSE task."""
-    self._session_id = None
-    await self._login_user_pass()
-    await self._login_site()
-    await self._login_session()
-
   async def _send_control_command(self, body):
     resp, assumed_control_panel_state = await self._site_post(CONTROL_URL, body)
     return Alarm(self, resp, assumed_control_panel_state)
@@ -186,8 +180,8 @@ class RiscoCloud:
               await self._handle_runtime_update(json.loads(data_line))
               event_type = None
               data_line = None
-        attempt = 0  # successful connection — reset backoff for next drop
-        await asyncio.sleep(RECONNECT_INITIAL_DELAY)  # small delay before reconnecting on clean EOF
+        attempt = 0  # clean stream end — reset backoff for next drop
+        await asyncio.sleep(RECONNECT_INITIAL_DELAY)  # small delay before reconnecting
       except asyncio.CancelledError:
         raise
       except Exception as e:

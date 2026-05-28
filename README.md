@@ -40,8 +40,8 @@ async def _restart():
 
 async def on_error(error):
     if isinstance(error, MaxRetriesError):
-        # Schedule restart outside the SSE task — calling close() from within
-        # the task would cancel it before login() could complete
+        # Schedule restart in a new task — calling close() from within the SSE
+        # task would deadlock because close() awaits the task itself
         asyncio.create_task(_restart())
     else:
         # Transient error — pyrisco will reconnect automatically with backoff

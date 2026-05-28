@@ -27,8 +27,9 @@ async def _restart():
 
 async def on_error(error):
     if isinstance(error, MaxRetriesError):
-        # All reconnect attempts exhausted — schedule a fresh login outside the
-        # current SSE task (calling close() from within the task would cancel it)
+        # All reconnect attempts exhausted — schedule restart in a new task;
+        # calling close() from within the SSE task would deadlock because
+        # close() awaits the task itself
         print(f"Gave up reconnecting ({error.last_error}), restarting...")
         asyncio.create_task(_restart())
     else:
