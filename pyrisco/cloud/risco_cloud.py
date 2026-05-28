@@ -216,8 +216,8 @@ class RiscoCloud:
     """Close the connection."""
     self._session_id = None
     if self._subscription_task:
+      self._subscription_task.cancel()
       if asyncio.current_task() != self._subscription_task:
-        self._subscription_task.cancel()
         try:
           await self._subscription_task
         except (asyncio.CancelledError, Exception):
