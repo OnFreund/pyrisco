@@ -64,6 +64,15 @@ class RiscoCloud:
       handlers.remove(handler)
     return _remove
 
+  @staticmethod
+  async def _call_handlers(handlers, *params):
+    """Call handlers, swallowing exceptions so a buggy callback doesn't break the SSE loop."""
+    for handler in list(handlers):
+      try:
+        await handler(*params)
+      except Exception:
+        pass
+
   async def _authenticated_post(self, url, body):
     headers = {
       "Content-Type": "application/json",
@@ -166,8 +175,7 @@ class RiscoCloud:
           initial_resp, assumed = await self._site_post(STATE_URL, {})
           alarm = Alarm(self, initial_resp["state"]["status"], assumed)
           self._latest_state = alarm
-          for handler in list(self._state_handlers):
-            await handler(alarm)
+          await RiscoCloud._call_handlers(self._state_handlers, alarm)
           attempt = 0  # usable connection established — reset backoff counter
           event_type = None
           data_line = None
@@ -206,8 +214,7 @@ class RiscoCloud:
         alarm = Alarm(self, resp["state"]["status"], assumed)
         self._last_status_update = update_time
         self._latest_state = alarm
-        for handler in list(self._state_handlers):
-          await handler(alarm)
+        await RiscoCloud._call_handlers(self._state_handlers, alarm)
     event_ts_str = data.get("LastEventUpdated")
     if event_ts_str and self._event_handlers:
       event_time = _parse_timestamp(event_ts_str)
@@ -215,8 +222,7 @@ class RiscoCloud:
       if last_event_time is None or event_time > last_event_time:
         events = await self.get_events(self._last_event_update)
         self._last_event_update = event_ts_str
-        for handler in list(self._event_handlers):
-          await handler(events)
+        await RiscoCloud._call_handlers(self._event_handlers, events)
 
   async def close(self):
     """Close the connection."""

@@ -23,11 +23,12 @@ def _make_cancel_cm():
 
 
 async def _run_sse_task(risco_cloud):
-  """Await the SSE subscription task, absorbing the CancelledError from reconnect."""
+  """Await the SSE subscription task, then yield so handler tasks can run."""
   try:
     await risco_cloud._subscription_task
   except asyncio.CancelledError:
     pass
+  await asyncio.sleep(0)  # let any pending tasks settle
 
 
 def _make_sse_stream(*events):
