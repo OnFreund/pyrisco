@@ -150,6 +150,13 @@ class RiscoCloud:
       }
       params = {"sessionToken": self._session_id}
       async with self._session.get(url, headers=headers, params=params) as resp:
+        # SSE connection is now open — fetch initial state before consuming
+        # messages so no state changes in between can be missed.
+        initial_resp, assumed = await self._site_post(STATE_URL, {})
+        alarm = Alarm(self, initial_resp["state"]["status"], assumed)
+        self._latest_state = alarm
+        for handler in list(self._state_handlers):
+          await handler(alarm)
         event_type = None
         data_line = None
         async for line_bytes in resp.content:

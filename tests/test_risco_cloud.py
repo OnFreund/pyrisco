@@ -207,8 +207,42 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
+  async def test_subscribe_states_notifies_handler_immediately(self, MockClientSession, mock_site_post):
+    """Handler should be called right after SSE connects, before any SSE messages."""
+    state_payload = {"partitions": [], "zones": []}
+    mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
+
+    mock_session = MockClientSession.return_value
+    mock_resp = MagicMock()
+    mock_resp.content = _make_sse_stream()  # no SSE messages
+    mock_get_cm = MagicMock()
+    mock_get_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_get_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get.return_value = mock_get_cm
+
+    received = []
+    async def on_state(alarm):
+      received.append(alarm)
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    risco_cloud._session = mock_session
+    risco_cloud.add_state_handler(on_state)
+
+    await risco_cloud.subscribe_states()
+    await risco_cloud._subscription_task
+
+    self.assertEqual(len(received), 1)
+    self.assertIsInstance(received[0], Alarm)
+    self.assertEqual(mock_site_post.call_count, 1)
+
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
+  @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_subscribe_states_calls_handler(self, MockClientSession, mock_site_post):
     state_payload = {"partitions": [], "zones": []}
+    # Two calls: initial state fetch + state fetch triggered by SSE message
     mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
 
     mock_session = MockClientSession.return_value
@@ -235,9 +269,9 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud.subscribe_states()
     await risco_cloud._subscription_task
 
-    self.assertEqual(len(received), 1)
+    self.assertEqual(len(received), 2)  # initial fetch + SSE-triggered fetch
     self.assertIsInstance(received[0], Alarm)
-    self.assertEqual(mock_site_post.call_count, 1)
+    self.assertEqual(mock_site_post.call_count, 2)
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
@@ -265,7 +299,8 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud.subscribe_states()
     await risco_cloud._subscription_task
 
-    self.assertEqual(mock_site_post.call_count, 1)
+    # initial fetch + first SSE message; second SSE message has same timestamp so skipped
+    self.assertEqual(mock_site_post.call_count, 2)
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   async def test_get_state_returns_cached(self, mock_site_post):
@@ -285,6 +320,9 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_subscribe_states_skips_fetch_when_offline(self, MockClientSession, mock_site_post):
+    state_payload = {"partitions": [], "zones": []}
+    mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
+
     mock_session = MockClientSession.return_value
     mock_resp = MagicMock()
     mock_resp.content = _make_sse_stream(
@@ -304,14 +342,19 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud.subscribe_states()
     await risco_cloud._subscription_task
 
-    mock_site_post.assert_not_called()
+    # Only the initial fetch; the SSE message is skipped because IsOffline=True
+    self.assertEqual(mock_site_post.call_count, 1)
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_subscribe_states_event_handler_fires_without_status_update(self, MockClientSession, mock_site_post):
     """LastEventUpdated should trigger the event handler even when LastStatusUpdate is absent."""
+    state_payload = {"partitions": [], "zones": []}
     event_payload = {"controlPanelEventsList": []}
-    mock_site_post.return_value = (event_payload, False)
+    mock_site_post.side_effect = [
+      ({"state": {"status": state_payload}}, False),  # initial state fetch
+      (event_payload, False),                          # event fetch from SSE message
+    ]
 
     mock_session = MockClientSession.return_value
     mock_resp = MagicMock()
@@ -338,10 +381,14 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud._subscription_task
 
     self.assertEqual(len(received_events), 1)
-    self.assertEqual(mock_site_post.call_count, 1)  # only event fetch, no state fetch
+    self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + event fetch
 
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
-  async def test_subscribe_states_calls_error_handler(self, MockClientSession):
+  async def test_subscribe_states_calls_error_handler(self, MockClientSession, mock_site_post):
+    state_payload = {"partitions": [], "zones": []}
+    mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
+
     mock_session = MockClientSession.return_value
     error = RuntimeError("stream broken")
 
@@ -379,8 +426,9 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
   async def test_subscribe_states_calls_event_handler_with_null_response(self, MockClientSession, mock_site_post):
     state_payload = {"partitions": [], "zones": []}
     mock_site_post.side_effect = [
-      ({"state": {"status": state_payload}}, False),
-      (None, False),
+      ({"state": {"status": state_payload}}, False),  # initial state fetch
+      ({"state": {"status": state_payload}}, False),  # state fetch from SSE message
+      (None, False),                                   # event fetch returns null
     ]
 
     mock_session = MockClientSession.return_value
@@ -419,8 +467,9 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     state_payload = {"partitions": [], "zones": []}
     event_payload = {"controlPanelEventsList": []}
     mock_site_post.side_effect = [
-      ({"state": {"status": state_payload}}, False),
-      (event_payload, False),
+      ({"state": {"status": state_payload}}, False),  # initial state fetch
+      ({"state": {"status": state_payload}}, False),  # state fetch from SSE message
+      (event_payload, False),                          # event fetch
     ]
 
     mock_session = MockClientSession.return_value
@@ -484,7 +533,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     await risco_cloud._subscription_task
 
     self.assertEqual(len(received_events), 0)
-    self.assertEqual(mock_site_post.call_count, 1)  # only the state fetch, no event fetch
+    self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + state fetch from SSE, no event fetch
 
 
 if __name__ == '__main__':
