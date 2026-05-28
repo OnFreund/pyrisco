@@ -160,6 +160,7 @@ class RiscoCloud:
         }
         params = {"sessionToken": self._session_id}
         async with self._session.get(url, headers=headers, params=params) as resp:
+          resp.raise_for_status()
           # SSE connection is now open — fetch initial state before consuming
           # messages so no state changes in between can be missed.
           initial_resp, assumed = await self._site_post(STATE_URL, {})
@@ -221,8 +222,8 @@ class RiscoCloud:
     """Close the connection."""
     self._session_id = None
     if self._subscription_task:
-      self._subscription_task.cancel()
       if asyncio.current_task() != self._subscription_task:
+        self._subscription_task.cancel()
         try:
           await self._subscription_task
         except (asyncio.CancelledError, Exception):
