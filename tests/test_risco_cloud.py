@@ -51,6 +51,14 @@ def _make_sse_stream(*events):
 
 class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
+  def setUp(self):
+    # Mock asyncio.sleep globally for all tests so SSE reconnect delays don't slow the suite.
+    self._sleep_patcher = patch('pyrisco.cloud.risco_cloud.asyncio.sleep', new_callable=AsyncMock)
+    self.mock_sleep = self._sleep_patcher.start()
+
+  def tearDown(self):
+    self._sleep_patcher.stop()
+
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._authenticated_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
   async def test_login(self, MockClientSession, mock_authenticated_post):
@@ -405,14 +413,13 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(len(received_events), 1)
     self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + event fetch
 
-  @patch('pyrisco.cloud.risco_cloud.asyncio.sleep', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
-  async def test_subscribe_states_calls_error_handler(self, MockClientSession, mock_site_post, mock_sleep):
+  async def test_subscribe_states_calls_error_handler(self, MockClientSession, mock_site_post):
     state_payload = {"partitions": [], "zones": []}
     mock_site_post.return_value = ({"state": {"status": state_payload}}, False)
     # Make sleep raise CancelledError so the loop stops cleanly after the first retry delay
-    mock_sleep.side_effect = asyncio.CancelledError
+    self.mock_sleep.side_effect = asyncio.CancelledError
 
     mock_session = MockClientSession.return_value
     error = RuntimeError("stream broken")
@@ -447,7 +454,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(len(received_errors), 1)
     self.assertIs(received_errors[0], error)
-    mock_sleep.assert_awaited_once_with(RECONNECT_INITIAL_DELAY)  # first attempt: 1s
+    self.mock_sleep.assert_awaited_once_with(RECONNECT_INITIAL_DELAY)  # first attempt: 1s
 
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._site_post', new_callable=AsyncMock)
@@ -565,9 +572,8 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(mock_site_post.call_count, 2)  # initial state fetch + state fetch from SSE, no event fetch
 
 
-  @patch('pyrisco.cloud.risco_cloud.asyncio.sleep', new_callable=AsyncMock)
   @patch('pyrisco.cloud.risco_cloud.aiohttp.ClientSession')
-  async def test_subscribe_states_max_retries_exceeded(self, MockClientSession, mock_sleep):
+  async def test_subscribe_states_max_retries_exceeded(self, MockClientSession):
     """After RECONNECT_MAX_ATTEMPTS failures the loop gives up and notifies via MaxRetriesError."""
     mock_session = MockClientSession.return_value
     error = RuntimeError("connection failed")
@@ -595,9 +601,9 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     self.assertIs(received_errors[-1].last_error, error)
 
     # Sleep called with exponential backoff (no sleep on final attempt)
-    self.assertEqual(mock_sleep.await_count, RECONNECT_MAX_ATTEMPTS - 1)
+    self.assertEqual(self.mock_sleep.await_count, RECONNECT_MAX_ATTEMPTS - 1)
     for i, expected_delay in enumerate([1, 2, 4, 8]):
-      self.assertEqual(mock_sleep.await_args_list[i].args[0], expected_delay)
+      self.assertEqual(self.mock_sleep.await_args_list[i].args[0], expected_delay)
 
 
 if __name__ == '__main__':
