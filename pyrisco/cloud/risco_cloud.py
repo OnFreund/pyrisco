@@ -103,8 +103,7 @@ class RiscoCloud:
         if isinstance(e, RetryableOperationError):
           from_control_panel = False
         elif isinstance(e, UnauthorizedError):
-          await self.close()
-          await self.login()
+          await self._relogin()
 
   async def _login_user_pass(self):
     headers = {"Content-Type": "application/json", "User-Agent": "pyrisco/1.0"}
@@ -143,6 +142,13 @@ class RiscoCloud:
         self._created_session = True
       else:
         self._session = session
+
+  async def _relogin(self):
+    """Refresh credentials in-place without closing the session or the SSE task."""
+    self._session_id = None
+    await self._login_user_pass()
+    await self._login_site()
+    await self._login_session()
 
   async def _send_control_command(self, body):
     resp, assumed_control_panel_state = await self._site_post(CONTROL_URL, body)
@@ -222,12 +228,11 @@ class RiscoCloud:
     """Close the connection."""
     self._session_id = None
     if self._subscription_task:
-      if asyncio.current_task() != self._subscription_task:
-        self._subscription_task.cancel()
-        try:
-          await self._subscription_task
-        except (asyncio.CancelledError, Exception):
-          pass
+      self._subscription_task.cancel()
+      try:
+        await self._subscription_task
+      except (asyncio.CancelledError, Exception):
+        pass
       self._subscription_task = None
     if self._created_session and self._session is not None:
       await self._session.close()
