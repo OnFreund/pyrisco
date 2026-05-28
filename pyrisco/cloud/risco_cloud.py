@@ -168,6 +168,7 @@ class RiscoCloud:
           self._latest_state = alarm
           for handler in list(self._state_handlers):
             await handler(alarm)
+          attempt = 0  # usable connection established — reset backoff counter
           event_type = None
           data_line = None
           async for line_bytes in resp.content:
@@ -180,8 +181,7 @@ class RiscoCloud:
               await self._handle_runtime_update(json.loads(data_line))
               event_type = None
               data_line = None
-        attempt = 0  # clean stream end — reset backoff for next drop
-        await asyncio.sleep(RECONNECT_INITIAL_DELAY)  # small delay before reconnecting
+        await asyncio.sleep(RECONNECT_INITIAL_DELAY)  # small delay before reconnecting on clean EOF
       except asyncio.CancelledError:
         raise
       except Exception as e:
@@ -223,10 +223,11 @@ class RiscoCloud:
     self._session_id = None
     if self._subscription_task:
       self._subscription_task.cancel()
-      try:
-        await self._subscription_task
-      except (asyncio.CancelledError, Exception):
-        pass
+      if asyncio.current_task() != self._subscription_task:
+        try:
+          await self._subscription_task
+        except (asyncio.CancelledError, Exception):
+          pass
       self._subscription_task = None
     if self._created_session and self._session is not None:
       await self._session.close()
