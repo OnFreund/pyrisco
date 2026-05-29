@@ -65,13 +65,12 @@ class RiscoCloud:
     return _remove
 
   @staticmethod
-  async def _call_handlers(handlers, *params):
-    """Call handlers, swallowing exceptions so a buggy callback doesn't break the SSE loop."""
-    for handler in list(handlers):
-      try:
-        await handler(*params)
-      except Exception:
-        pass
+  def _call_handlers(handlers, *params):
+    """Dispatch handlers asynchronously so a slow/buggy callback doesn't block the SSE loop."""
+    if handlers:
+      async def _gather():
+        await asyncio.gather(*[h(*params) for h in list(handlers)], return_exceptions=True)
+      asyncio.create_task(_gather())
 
   async def _authenticated_post(self, url, body):
     headers = {
@@ -175,7 +174,7 @@ class RiscoCloud:
           initial_resp, assumed = await self._site_post(STATE_URL, {})
           alarm = Alarm(self, initial_resp["state"]["status"], assumed)
           self._latest_state = alarm
-          await RiscoCloud._call_handlers(self._state_handlers, alarm)
+          RiscoCloud._call_handlers(self._state_handlers, alarm)
           attempt = 0  # usable connection established — reset backoff counter
           event_type = None
           data_line = None
@@ -195,11 +194,9 @@ class RiscoCloud:
       except Exception as e:
         attempt += 1
         if attempt >= RECONNECT_MAX_ATTEMPTS:
-          for handler in list(self._error_handlers):
-            await handler(MaxRetriesError(e))
+          RiscoCloud._call_handlers(self._error_handlers, MaxRetriesError(e))
           return
-        for handler in list(self._error_handlers):
-          await handler(e)
+        RiscoCloud._call_handlers(self._error_handlers, e)
         delay = min(RECONNECT_INITIAL_DELAY * (2 ** (attempt - 1)), RECONNECT_MAX_DELAY)
         await asyncio.sleep(delay)
 
@@ -214,7 +211,7 @@ class RiscoCloud:
         alarm = Alarm(self, resp["state"]["status"], assumed)
         self._last_status_update = update_time
         self._latest_state = alarm
-        await RiscoCloud._call_handlers(self._state_handlers, alarm)
+        RiscoCloud._call_handlers(self._state_handlers, alarm)
     event_ts_str = data.get("LastEventUpdated")
     if event_ts_str and self._event_handlers:
       event_time = _parse_timestamp(event_ts_str)
@@ -222,7 +219,7 @@ class RiscoCloud:
       if last_event_time is None or event_time > last_event_time:
         events = await self.get_events(self._last_event_update)
         self._last_event_update = event_ts_str
-        await RiscoCloud._call_handlers(self._event_handlers, events)
+        RiscoCloud._call_handlers(self._event_handlers, events)
 
   async def close(self):
     """Close the connection."""

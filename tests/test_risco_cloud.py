@@ -22,13 +22,20 @@ def _make_cancel_cm():
   return cm
 
 
+async def _drain_handler_tasks():
+  """Wait for all handler tasks spawned by _call_handlers to finish."""
+  pending = {t for t in asyncio.all_tasks() if t != asyncio.current_task()}
+  if pending:
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
 async def _run_sse_task(risco_cloud):
-  """Await the SSE subscription task, then yield so handler tasks can run."""
+  """Await the SSE subscription task, then drain any handler tasks."""
   try:
     await risco_cloud._subscription_task
   except asyncio.CancelledError:
     pass
-  await asyncio.sleep(0)  # let any pending tasks settle
+  await _drain_handler_tasks()
 
 
 def _make_sse_stream(*events):
@@ -452,6 +459,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
       await risco_cloud._subscription_task
     except asyncio.CancelledError:
       pass
+    await _drain_handler_tasks()
 
     self.assertEqual(len(received_errors), 1)
     self.assertIs(received_errors[0], error)
@@ -593,6 +601,7 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
 
     await risco_cloud.subscribe_states()
     await risco_cloud._subscription_task  # completes normally after giving up
+    await _drain_handler_tasks()
 
     # Error handler called once per attempt: first N-1 with the raw error, last with MaxRetriesError
     self.assertEqual(len(received_errors), RECONNECT_MAX_ATTEMPTS)
