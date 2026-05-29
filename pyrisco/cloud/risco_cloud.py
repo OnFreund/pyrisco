@@ -7,7 +7,12 @@ from datetime import datetime
 
 from .alarm import Alarm
 from .event import Event
-from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, GROUP_ID_TO_NAME
+from pyrisco.common import UnauthorizedError, CannotConnectError, OperationError, RetryableOperationError, MaxRetriesError, GROUP_ID_TO_NAME
+
+
+def _parse_timestamp(ts_str):
+  """Parse an ISO 8601 timestamp, accepting both 'Z' and '+00:00' UTC suffixes."""
+  return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
 
 
 LOGIN_URL = "https://www.riscocloud.com/webapi/api/auth/login"
@@ -23,6 +28,9 @@ SSE_URL = "https://www.riscocloud.com/webapi/api/wuws/site/%s/ControlPanel/sse/c
 
 NUM_RETRIES = 3
 RETRYABLE_RESULT_CODE = 72
+RECONNECT_INITIAL_DELAY = 1
+RECONNECT_MAX_DELAY = 60
+RECONNECT_MAX_ATTEMPTS = 5
 
 
 class RiscoCloud:
@@ -43,7 +51,9 @@ class RiscoCloud:
     self._created_session = False
     self._state_handlers = []
     self._error_handlers = []
+    self._event_handlers = []
     self._last_status_update = None
+    self._last_event_update = None
     self._latest_state = None
     self._subscription_task = None
 
@@ -53,6 +63,14 @@ class RiscoCloud:
     def _remove():
       handlers.remove(handler)
     return _remove
+
+  @staticmethod
+  def _call_handlers(handlers, *params):
+    """Dispatch handlers asynchronously so a slow/buggy callback doesn't block the SSE loop."""
+    if handlers:
+      async def _gather():
+        await asyncio.gather(*[h(*params) for h in list(handlers)], return_exceptions=True)
+      asyncio.create_task(_gather())
 
   async def _authenticated_post(self, url, body):
     headers = {
@@ -139,58 +157,80 @@ class RiscoCloud:
     return Alarm(self, resp, assumed_control_panel_state)
 
   async def _sse_loop(self):
-    try:
-      url = SSE_URL % self._site_id
-      headers = {
-        "authorization": f"Bearer {self._access_token}",
-        "User-Agent": "pyrisco/1.0",
-        "sessionToken": self._session_id,
-      }
-      params = {"sessionToken": self._session_id}
-      async with self._session.get(url, headers=headers, params=params) as resp:
-        event_type = None
-        data_line = None
-        async for line_bytes in resp.content:
-          line = line_bytes.decode("utf-8").rstrip("\r\n")
-          if line.startswith("event:"):
-            event_type = line[6:].strip()
-          elif line.startswith("data:"):
-            data_line = line[5:].strip()
-          elif line == "" and event_type == "runtimeUpdate" and data_line:
-            await self._handle_runtime_update(json.loads(data_line))
-            event_type = None
-            data_line = None
-    except asyncio.CancelledError:
-      raise
-    except Exception as e:
-      for handler in list(self._error_handlers):
-        await handler(e)
+    attempt = 0
+    while True:
+      try:
+        url = SSE_URL % self._site_id
+        headers = {
+          "authorization": f"Bearer {self._access_token}",
+          "User-Agent": "pyrisco/1.0",
+          "sessionToken": self._session_id,
+        }
+        params = {"sessionToken": self._session_id}
+        async with self._session.get(url, headers=headers, params=params) as resp:
+          resp.raise_for_status()
+          # SSE connection is now open — fetch initial state before consuming
+          # messages so no state changes in between can be missed.
+          initial_resp, assumed = await self._site_post(STATE_URL, {})
+          alarm = Alarm(self, initial_resp["state"]["status"], assumed)
+          self._latest_state = alarm
+          RiscoCloud._call_handlers(self._state_handlers, alarm)
+          attempt = 0  # usable connection established — reset backoff counter
+          event_type = None
+          data_line = None
+          async for line_bytes in resp.content:
+            line = line_bytes.decode("utf-8").rstrip("\r\n")
+            if line.startswith("event:"):
+              event_type = line[6:].strip()
+            elif line.startswith("data:"):
+              data_line = line[5:].strip()
+            elif line == "" and event_type == "runtimeUpdate" and data_line:
+              await self._handle_runtime_update(json.loads(data_line))
+              event_type = None
+              data_line = None
+        await asyncio.sleep(RECONNECT_INITIAL_DELAY)  # small delay before reconnecting on clean EOF
+      except asyncio.CancelledError:
+        raise
+      except Exception as e:
+        attempt += 1
+        if attempt >= RECONNECT_MAX_ATTEMPTS:
+          RiscoCloud._call_handlers(self._error_handlers, MaxRetriesError(e))
+          return
+        RiscoCloud._call_handlers(self._error_handlers, e)
+        delay = min(RECONNECT_INITIAL_DELAY * (2 ** (attempt - 1)), RECONNECT_MAX_DELAY)
+        await asyncio.sleep(delay)
 
   async def _handle_runtime_update(self, data):
-    if data.get("isOffline"):
+    if data.get("IsOffline"):
       return
-    ts_str = data.get("lastStatusUpdate")
-    if not ts_str:
-      return
-    update_time = datetime.fromisoformat(ts_str)
-    if self._last_status_update is not None and update_time <= self._last_status_update:
-      return
-    resp, assumed = await self._site_post(STATE_URL, {})
-    alarm = Alarm(self, resp["state"]["status"], assumed)
-    self._last_status_update = update_time
-    self._latest_state = alarm
-    for handler in list(self._state_handlers):
-      await handler(alarm)
+    ts_str = data.get("LastStatusUpdate")
+    if ts_str:
+      update_time = _parse_timestamp(ts_str)
+      if self._last_status_update is None or update_time > self._last_status_update:
+        resp, assumed = await self._site_post(STATE_URL, {})
+        alarm = Alarm(self, resp["state"]["status"], assumed)
+        self._last_status_update = update_time
+        self._latest_state = alarm
+        RiscoCloud._call_handlers(self._state_handlers, alarm)
+    event_ts_str = data.get("LastEventUpdated")
+    if event_ts_str and self._event_handlers:
+      event_time = _parse_timestamp(event_ts_str)
+      last_event_time = _parse_timestamp(self._last_event_update) if self._last_event_update else None
+      if last_event_time is None or event_time > last_event_time:
+        events = await self.get_events(self._last_event_update)
+        self._last_event_update = event_ts_str
+        RiscoCloud._call_handlers(self._event_handlers, events)
 
   async def close(self):
     """Close the connection."""
     self._session_id = None
     if self._subscription_task:
       self._subscription_task.cancel()
-      try:
-        await self._subscription_task
-      except (asyncio.CancelledError, Exception):
-        pass
+      if asyncio.current_task() != self._subscription_task:
+        try:
+          await self._subscription_task
+        except (asyncio.CancelledError, Exception):
+          pass
       self._subscription_task = None
     if self._created_session and self._session is not None:
       await self._session.close()
@@ -214,6 +254,10 @@ class RiscoCloud:
   def add_error_handler(self, handler):
     """Register an async callback for SSE errors. Returns a remover callable."""
     return RiscoCloud._add_handler(self._error_handlers, handler)
+
+  def add_event_handler(self, handler):
+    """Register an async callback for event log updates via SSE. Returns a remover callable."""
+    return RiscoCloud._add_handler(self._event_handlers, handler)
 
   async def subscribe_states(self):
     """Start listening for push state updates via SSE."""
@@ -265,6 +309,8 @@ class RiscoCloud:
       "offset": 0,
     }
     response, assumed_control_panel_state = await self._site_post(EVENTS_URL, body)
+    if response is None:
+      return []
     return [Event(e) for e in response["controlPanelEventsList"]]
 
   async def bypass_zone(self, zone, bypass):
