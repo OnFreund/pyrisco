@@ -55,6 +55,14 @@ def _rp432mp_capabilities(firmware):
     MAX_OUTPUTS: 196,
   }
 
+def _rw432mpv_capabilities(firmware):
+  return {
+    PANEL_MODEL: 'LightSys Air',
+    MAX_ZONES: 128,
+    MAX_PARTS: 32,
+    MAX_OUTPUTS: 4,
+  }
+
 
 def _rp512_capabilities(firmware):
   max_zones = 64
@@ -79,6 +87,7 @@ PANELS = {
   'RW332': _rw332_capabilities,
   'RP432': _rp432_capabilities,
   'RP432MP': _rp432mp_capabilities,
+  'RW432MPV': _rw432mpv_capabilities,
   'RP512': _rp512_capabilities
 }
 
