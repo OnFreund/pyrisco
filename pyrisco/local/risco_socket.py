@@ -77,7 +77,11 @@ class RiscoSocket:
             future.set_result(command)
         else:
           await self._handle_incoming(cmd_id, command, crc)
-      except ConnectionResetError as error:
+      except (ConnectionError, asyncio.IncompleteReadError) as error:
+        for i, fut in enumerate(self._futures):
+          if fut is not None and not fut.done():
+            fut.set_exception(OperationError('Connection lost'))
+          self._futures[i] = None
         await self._queue.put(error)
         break
       except Exception as error:
