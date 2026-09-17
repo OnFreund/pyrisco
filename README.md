@@ -144,7 +144,6 @@ async def test_local():
       print(f'Partition handler: {partition_id}, {vars(partition)}')
     remove_partition = r.add_partition_handler(_partition)
     
-    await r.connect()
     # partitions and zones are one-based in Cloud
     print(r.partitions[1].armed)
     
@@ -172,6 +171,34 @@ async def test_local():
 
 asyncio.run(test_local())
 ```
+
+#### Errors and connection loss (local)
+
+`RiscoLocal` holds one TCP session to the panel. Error handlers receive:
+
+* `ConnectionLostError` - the session ended without `disconnect()`: the panel closed or reset it, it stopped answering the keep-alive, or its frames became unreadable. The object has disconnected itself; call `connect()` again, on it or on a new instance, to carry on. The socket error is the `__cause__`. It is also a `ConnectionResetError`, for code written against earlier versions.
+* `CommunicationError` - an answer was lost or unreadable, but the session is still up. If the link itself is gone, a `ConnectionLostError` follows.
+* `OperationError` - the panel refused something, sent a status for a zone or partition that was not read at connect, or refused the status of a zone at connect, which is then left out.
+
+Handlers run as tasks. An exception a handler raises is logged (`pyrisco.local.risco_local`); `disconnect()` does not cancel handlers still running. Errors reported while no error handler is registered - typically between `connect()` returning and the consumer adding its handlers - are passed to the first one added (at most the last 20).
+
+A zone left out at connect stays out until the next `connect()`; its pushes are reported once as a status for an unknown zone. Reconnect to bring it back. A label, partition or group the panel refuses or does not answer at connect gets a placeholder, reported the same way: the zone's own number as its name, and no partitions or groups - which reads as "in none", not as "unknown".
+
+Status pushes that arrive while `connect()` runs are applied after it, unless they are older than the status the zone, partition or system was read with.
+
+`connect()` raises:
+
+* `UnauthorizedError` - the panel rejected the access code (`N06`).
+* `CannotConnectError` - the panel could not be reached, did not answer as expected, or reconnecting now would be too soon.
+
+Other exceptions are raised as they are, such as a `KeyError` for an unsupported panel model.
+
+Reconnects are paced per panel:
+
+* Every session that got as far as a TCP connection, a refused login included, is followed by a few seconds' delay, which `connect()` waits out itself.
+* Sessions lost soon after connecting make that delay grow. `connect()` then raises rather than wait, so retry later.
+* A panel that does not accept the TCP connection at all is not paced - leave a gap between attempts yourself.
+* After a process restart the panel may still hold the previous session's state. The first `connect()` can then fail at once ("still encrypting"), and a retry a few seconds later succeeds.
 
 ## Testing PRs
 
