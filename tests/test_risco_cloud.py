@@ -157,6 +157,24 @@ class TestRiscoCloud(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(mock_authenticated_post.call_count, 1)
 
   @patch('pyrisco.cloud.risco_cloud.RiscoCloud._authenticated_post', new_callable=AsyncMock)
+  async def test_get_state_without_partitions(self, mock_authenticated_post):
+    mock_authenticated_post.side_effect = [
+      {
+        "state": {"status": {"partitions": None, "zones": []}}
+      }
+    ]
+
+    risco_cloud = RiscoCloud("username", "password", "pin")
+    # Set the access token to avoid login
+    risco_cloud._access_token = "mock_access_token"
+    risco_cloud._site_id = "mock_site_id"
+    risco_cloud._session_id = "mock_session_id"
+    state = await risco_cloud.get_state()
+
+    self.assertEqual(state.partitions, {})
+    self.assertEqual(state.zones, {})
+
+  @patch('pyrisco.cloud.risco_cloud.RiscoCloud._authenticated_post', new_callable=AsyncMock)
   async def test_get_state_with_retries(self, mock_authenticated_post):
     mock_authenticated_post.side_effect = [
       RetryableOperationError("Retryable error"),
