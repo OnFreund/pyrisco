@@ -402,6 +402,18 @@ class LateReplyTest(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(sock._lost)
     self.assertTrue(any('unreadable frames in a row' in str(i) for i in drain(sock._queue)))
 
+  async def test_the_frame_that_closes_the_connection_is_reported_once(self):
+    """Report each unreadable frame once; the last one's report says why it closes."""
+    sock = connected_socket()
+    scripted_reader(sock, [(None, '', False)] * 2)
+
+    await asyncio.wait_for(sock._listen(), LOOP_TIMEOUT)
+
+    reports = [str(i) for i in drain(sock._queue) if isinstance(i, CommunicationError)]
+    self.assertEqual(len(reports), 2, reports)
+    self.assertIn('Unreadable frame', reports[0])
+    self.assertIn('unreadable frames in a row; closing the connection', reports[1])
+
   async def test_a_readable_frame_between_unreadable_ones_keeps_the_connection(self):
     sock = connected_socket()
     scripted_reader(sock, [(None, '', False), (1, 'ACK', True), (None, '', False)])
@@ -466,6 +478,80 @@ class LateReplyTest(unittest.IsolatedAsyncioTestCase):
     crypt.decode(plain)
 
     self.assertTrue(crypt.encrypted_panel)
+
+  def test_an_unreadable_frame_does_not_turn_encryption_on(self):
+    """Noise that looks like the encryption flag must not encrypt our commands."""
+    crypt = RiscoCrypt()
+    crypt.set_panel_id(0x15)
+    damaged = bytearray(RiscoCrypt().encode(1, 'ACK'))
+    damaged[1] = 17  # the encryption flag, over a plaintext body
+
+    try:
+      _, _, valid = crypt.decode(bytes(damaged))
+    except ValueError:
+      valid = False  # garbled beyond parsing: just as unreadable
+    self.assertFalse(valid)
+    self.assertFalse(crypt.encrypted_panel)
+    self.assertNotEqual(crypt.encode(2, 'CLOCK')[1], 17)
+    # Plaintext still reads after it.
+    self.assertEqual(crypt.decode(bytes(RiscoCrypt().encode(3, 'ACK'))), [3, 'ACK', True])
+
+  def test_an_encrypted_frame_with_a_bad_crc_does_not_turn_encryption_on(self):
+    crypt = RiscoCrypt()
+    crypt.set_panel_id(0x15)
+    panel = RiscoCrypt()
+    panel.set_panel_id(0x15)
+    damaged = bytearray(panel.encode(1, 'ACK', force_crypt=True))
+    damaged[4] ^= 0x01  # 'A' of ACK: still parses, CRC no longer matches
+
+    self.assertEqual(crypt.decode(bytes(damaged))[2], False)
+    self.assertFalse(crypt.encrypted_panel)
+    self.assertNotEqual(crypt.encode(2, 'CLOCK')[1], 17)
+
+  def test_an_encrypted_frame_before_the_panel_id_does_not_turn_encryption_on(self):
+    """Unreadable before RID is stored: flag it for the listener, keep sending plaintext."""
+    crypt = RiscoCrypt()
+    panel = RiscoCrypt()
+    panel.set_panel_id(0x15)
+
+    self.assertEqual(crypt.decode(bytes(panel.encode(1, 'ACK', force_crypt=True))), [None, '', False])
+    crypt.set_panel_id(0x15)
+    self.assertNotEqual(crypt.encode(2, 'LCL')[1], 17)
+    self.assertFalse(crypt.encrypted_panel)
+    self.assertTrue(crypt.encrypted_before_id)
+
+  def test_an_encrypted_frame_with_no_command_id_does_not_turn_encryption_on(self):
+    """A CRC-valid frame that still cannot be parsed is unreadable too."""
+    crypt = RiscoCrypt()
+    crypt.set_panel_id(0x15)
+    panel = RiscoCrypt()
+    panel.set_panel_id(0x15)
+    body = 'AB\x17'  # no numeric command id
+    payload = (body + panel._get_crc(body)).encode()
+    frame = bytes([2, 17]) + bytes(panel._encrypt_chars(payload, True)) + bytes([3])
+
+    with self.assertRaises(ValueError):
+      crypt.decode(frame)
+    self.assertFalse(crypt.encrypted_panel)
+
+  def test_a_plaintext_frame_after_an_early_encrypted_one_is_read(self):
+    """An encrypted frame before the panel id is unreadable; it does not hide the next plaintext one."""
+    crypt = RiscoCrypt()
+    panel = RiscoCrypt()
+    panel.set_panel_id(0x15)
+
+    self.assertFalse(crypt.decode(bytes(panel.encode(1, 'ACK', force_crypt=True)))[2])
+    self.assertEqual(crypt.decode(bytes(RiscoCrypt().encode(2, 'RID=0015'))), [2, 'RID=0015', True])
+
+  def test_a_readable_encrypted_frame_turns_encryption_on(self):
+    crypt = RiscoCrypt()
+    crypt.set_panel_id(0x15)
+    panel = RiscoCrypt()
+    panel.set_panel_id(0x15)
+
+    self.assertTrue(crypt.decode(bytes(panel.encode(1, 'ACK', force_crypt=True)))[2])
+    self.assertTrue(crypt.encrypted_panel)
+    self.assertEqual(crypt.encode(2, 'CLOCK')[1], 17)
 
   def test_decoding_an_encrypted_frame_without_the_panel_id_is_unreadable(self):
     crypt = RiscoCrypt()
@@ -651,6 +737,8 @@ class KeepAliveTest(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(sock._writer.transport.closed,
                     'Close the dead transport so the listener can observe EOF.')
     reported = drain(sock._queue)
+    # One report per failure; the last one is the notice, caused by that failure.
+    self.assertEqual(len(reported), 3, reported)
     notice = reported[-1]
     self.assertIsInstance(notice, OperationError)
     self.assertIn('closing the connection', str(notice))

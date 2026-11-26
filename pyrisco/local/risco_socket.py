@@ -85,6 +85,11 @@ class RiscoSocket:
     """How many commands may wait for a reply at once."""
     return self._max_concurrency
 
+  @property
+  def closing(self):
+    """Whether disconnect() was called since the last connect()."""
+    return self._closing
+
   async def connect(self):
     # Finish any old disconnect, then close any remaining session.
     async with self._disconnect_lock:
@@ -186,18 +191,18 @@ class RiscoSocket:
           corrupted += 1
           # Encryption before RID means stale session state; bad plaintext only counts.
           # After a readable RID, connect() may not yet have stored the panel ID.
-          early = (self._crypt is not None and self._crypt.encrypted_panel
+          early = (self._crypt is not None and self._crypt.encrypted_before_id
                    and not self._crypt.has_panel_id and self._received == 0)
           if (corrupted >= MAX_CORRUPTED_FRAMES or early) and not given_up and not self._closing:
             given_up = True
             self._close_reason = (
                 'The panel is still encrypting as for a previous session' if early
                 else f'{corrupted} unreadable frames in a row')
-            await queue.put(CommunicationError(
-                f'{self._close_reason}; closing the connection'))
             self._lost = True
             # The listener then reads end-of-stream and reports the loss.
             _shut_transport(writer)
+            # One report for this frame: why the connection is closing.
+            raise CommunicationError(f'{self._close_reason}; closing the connection')
           raise CommunicationError(f'Unreadable frame (id {cmd_id})')
         corrupted = 0
         self._received += 1
@@ -256,9 +261,11 @@ class RiscoSocket:
             await queue.put(error)
           refusing = True
         else:
-          await queue.put(error)
           failures += 1
-          if failures >= KEEP_ALIVE_MAX_FAILURES:
+          if failures < KEEP_ALIVE_MAX_FAILURES:
+            await queue.put(error)
+          else:
+            # One report for the last failure: why the connection is closing.
             self._close_reason = f'Keep-alive failed {failures} times in a row'
             notice = CommunicationError(f'{self._close_reason}; closing the connection')
             notice.__cause__ = error

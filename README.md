@@ -176,7 +176,7 @@ asyncio.run(test_local())
 
 `RiscoLocal` holds one TCP session to the panel. Error handlers receive:
 
-* `ConnectionLostError` - the session ended without `disconnect()`: the panel closed or reset it, it stopped answering the keep-alive, or its frames became unreadable. The object has disconnected itself; call `connect()` again, on it or on a new instance, to carry on. The socket error is the `__cause__`. It is also a `ConnectionResetError`, for code written against earlier versions.
+* `ConnectionLostError` - the session ended without `disconnect()`: the panel closed or reset it, it stopped answering the keep-alive, or its frames became unreadable. The object has disconnected itself; call `connect()` again, on it or on a new instance, to carry on. It is not reported if `disconnect()` is called, or a `connect()` is still running or has replaced the session, while the lost session is being closed: that call's outcome says what happened. The socket error is the `__cause__`. It is also a `ConnectionResetError`, for code written against earlier versions.
 * `CommunicationError` - an answer was lost or unreadable, but the session is still up. If the link itself is gone, a `ConnectionLostError` follows.
 * `OperationError` - the panel refused something, sent a status for a zone or partition that was not read at connect, or refused the status of a zone at connect, which is then left out.
 
@@ -192,6 +192,8 @@ Status pushes that arrive while `connect()` runs are applied after it, unless th
 * `CannotConnectError` - the panel could not be reached, did not answer as expected, or reconnecting now would be too soon.
 
 Other exceptions are raised as they are, such as a `KeyError` for an unsupported panel model.
+
+A failed `connect()` leaves `id`, `zones`, `partitions` and `system` unchanged (`None` before the first successful one). `bypass_zone()` (and `Zone.bypass()`) decides from the zone's current status whether to send the toggle, so it raises `CommunicationError` while there is no live session, including during `connect()`. A `disconnect()` made while `connect()` is still setting up wins: that `connect()` raises (usually `CannotConnectError`) and leaves the panel disconnected, and no connection loss is reported for it. One `connect()` runs at a time per instance: calling it again while one is still running raises `CannotConnectError`, unless the running one is ending because of a `disconnect()`, in which case it waits for it (and still fails if another `disconnect()` comes meanwhile). Error handlers for problems found during `connect()` run once it has finished.
 
 Reconnects are paced per panel:
 

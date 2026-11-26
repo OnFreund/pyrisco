@@ -218,6 +218,56 @@ class ConnectTest(ScriptedPanelTestCase):
     self.assertFalse(local.zones[2].bypassed)
     self.assertEqual(len(self.panel.sessions), 1)
 
+  async def test_a_bypass_during_a_reconnect_is_refused(self):
+    """ZBYPAS toggles: never decide it from the previous session's zone status.
+
+    Both directions matter: a stale 'already bypassed' would skip a needed
+    toggle, and a stale 'not bypassed' would undo a bypass.
+    """
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    self.assertFalse(local.zones[2].bypassed)
+
+    # Bypassed behind our back; the reconnect stalls reading the partition.
+    self.panel.statuses[2] = '---Y'
+    self.panel.rules['PSTT1?'] = SILENT
+    reconnect = asyncio.create_task(local.connect())
+    self.addCleanup(reconnect.cancel)
+    await _until(lambda: len(self.panel.sessions) == 2
+                 and 'PSTT1?' in self.panel.sessions[1].received, what='partition discovery')
+
+    for bypass in (True, False):
+      with self.assertRaisesRegex(CommunicationError, 'Not connected'):
+        await asyncio.wait_for(local.zones[2].bypass(bypass), WAIT)
+    with self.assertRaises(CannotConnectError):
+      await asyncio.wait_for(reconnect, WAIT)
+
+    self.assertNotIn('ZBYPAS=2', self.panel.sessions[1].received)
+    self.assertEqual(self.panel.statuses[2], '---Y')
+
+  async def test_a_bypass_after_the_connection_dropped_is_refused(self):
+    """Even one needing no toggle: the cached status may be stale by now."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+
+    local._rs._writer.transport.close()  # lost; the listener has not noticed yet
+    with self.assertRaisesRegex(CommunicationError, 'Not connected'):
+      await asyncio.wait_for(local.zones[2].bypass(False), WAIT)
+
+  async def test_a_bypass_while_disconnecting_is_refused(self):
+    """DCN sent, its ACK pending: the session is ending, so no decision from it."""
+    self.panel.rules['DCN'] = SILENT
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    closing = asyncio.create_task(local.disconnect())
+    self.addAsyncCleanup(asyncio.wait_for, closing, WAIT)
+    await _until(lambda: 'DCN' in self.panel.sessions[0].received, what='DCN')
+
+    with self.assertRaisesRegex(CommunicationError, 'Not connected'):
+      await asyncio.wait_for(local.zones[2].bypass(False), WAIT)
+
   async def test_bypassing_a_zone_is_acknowledged_and_pushed(self):
     local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
     await asyncio.wait_for(local.connect(), WAIT)
@@ -412,6 +462,427 @@ class DiscoveryTest(ScriptedPanelTestCase):
 
     self.assertNotIn('Not connected', str(caught.exception))
     self.assertEqual(local._left_out, [])
+
+  async def _assert_a_failed_reconnect_keeps_the_snapshot(self, failing, reached):
+    """Connect, then fail a reconnect that finds another zone at `failing`."""
+    self.panel.zones = {1, 2, 3}
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    self.assertEqual(local.id, '12345678901')
+    before = (local.id, local.zones, local.partitions, local.system)
+
+    self.panel.zones = {1, 2, 3, 4}
+    self.panel.rules.update(failing)
+    with self.assertRaises(CannotConnectError):
+      await asyncio.wait_for(local.connect(), WAIT)
+
+    self.assertEqual(len(self.panel.sessions), 2)
+    self.assertIn(reached, self.panel.sessions[1].received, 'Fail where the test means to.')
+    after = (local.id, local.zones, local.partitions, local.system)
+    for old, new in zip(before, after):
+      self.assertIs(new, old)
+    self.assertEqual(sorted(local.zones), [1, 2, 3])
+
+  async def test_a_reconnect_lost_during_discovery_keeps_the_last_complete_snapshot(self):
+    """Never mix objects from a failed session with those of the last good one."""
+    await self._assert_a_failed_reconnect_keeps_the_snapshot({'PSTT1?': CLOSE}, 'PSTT1?')
+
+  async def test_a_reconnect_failing_validation_keeps_the_last_complete_snapshot(self):
+    """A session whose system status is refused fails after reading every partition."""
+    await self._assert_a_failed_reconnect_keeps_the_snapshot({'SSTT?': REFUSE}, 'SSTT?')
+
+  async def _assert_a_disconnect_as_setup_finishes_keeps_the_snapshot(self, finished):
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    before = (local.id, local.zones, local.partitions, local.system)
+
+    self.panel.zones = {1, 2, 3, 4}
+    init_system = local._init_system
+    closing = []
+
+    async def _then_disconnect():
+      system = await init_system()
+      # As a concurrent caller would: done already, or DCN sent and its ACK pending.
+      closing.append(asyncio.create_task(local.disconnect()))
+      await (closing[0] if finished else asyncio.sleep(0))
+      return system
+
+    local._init_system = _then_disconnect
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+      await asyncio.wait_for(local.connect(), WAIT)
+    await asyncio.wait_for(closing[0], WAIT)
+
+    after = (local.id, local.zones, local.partitions, local.system)
+    for old, new in zip(before, after):
+      self.assertIs(new, old)
+    self.assertIsNone(local._listen_task)
+
+  async def test_a_disconnect_as_setup_finishes_keeps_the_last_complete_snapshot(self):
+    """disconnect() completing with the last setup answer must not publish that session."""
+    await self._assert_a_disconnect_as_setup_finishes_keeps_the_snapshot(finished=True)
+
+  async def test_a_disconnect_under_way_as_setup_finishes_keeps_the_last_complete_snapshot(self):
+    """Nor one still waiting for its DCN to be acknowledged: its listener would never be cancelled."""
+    await self._assert_a_disconnect_as_setup_finishes_keeps_the_snapshot(finished=False)
+
+  async def test_a_connect_while_another_runs_is_refused(self):
+    """Two attempts would share one socket and close each other's sessions."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    init_system = local._init_system
+    refused = []
+
+    async def _then_connect_again():
+      system = await init_system()
+      if not refused:
+        try:
+          await asyncio.wait_for(local.connect(), WAIT)
+        except CannotConnectError as error:
+          refused.append(error)
+      return system
+
+    local._init_system = _then_connect_again
+    await asyncio.wait_for(local.connect(), WAIT)
+
+    self.assertRegex(str(refused[0]), 'already running')
+    self.assertEqual(len(self.panel.sessions), 1)
+    self.assertTrue(local._rs.connected)
+    # Once it has finished, connecting again works.
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.assertEqual(len(self.panel.open_sessions), 1)
+
+  def _eager_tasks(self):
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    self.addCleanup(loop.set_task_factory, None)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_handler_that_disconnects_on_a_setup_report_leaves_no_listener(self):
+    """Handlers can run at once (eager tasks): connect() must have stored its listener."""
+    self._eager_tasks()
+    self.panel.rules['ZLBL*1?'] = REFUSE  # a placeholder, reported after connect
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    done = asyncio.Event()
+
+    async def _disconnect(error):
+      await local.disconnect()
+      done.set()
+
+    local.add_error_handler(_disconnect)
+    await asyncio.wait_for(local.connect(), WAIT)
+    await asyncio.wait_for(done.wait(), WAIT)
+
+    self.assertIsNone(local._listen_task)
+    self.assertFalse(local._rs.connected)
+    listeners = [t for t in asyncio.all_tasks() if not t.done()
+                 and t.get_coro().__qualname__ == 'RiscoLocal._listen']
+    self.assertEqual(listeners, [])
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_handler_can_reconnect_after_a_loss_with_eager_tasks(self):
+    """The loss cleanup finishes before handlers run, so it cannot undo their reconnect."""
+    self._eager_tasks()
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    reconnected = asyncio.Event()
+
+    async def _reconnect(error):
+      if isinstance(error, ConnectionLostError):
+        await local.disconnect()
+        await local.connect()
+        reconnected.set()
+
+    local.add_error_handler(_reconnect)
+    self.panel.close_sessions()
+    await asyncio.wait_for(reconnected.wait(), WAIT)
+    await asyncio.sleep(0.3)
+
+    self.assertTrue(local._rs.connected)
+    self.assertEqual(len(self.panel.open_sessions), 1)
+
+  async def test_a_connection_loss_is_not_a_disconnect_request(self):
+    """Only disconnect() counts: a loss must not make a concurrent reconnect give up."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    lost = asyncio.Event()
+
+    async def _on_error(error):
+      if isinstance(error, ConnectionLostError):
+        lost.set()
+
+    local.add_error_handler(_on_error)
+    self.panel.close_sessions()
+    await asyncio.wait_for(lost.wait(), WAIT)
+
+    self.assertEqual(local._disconnects, 0)
+
+  async def test_an_old_loss_is_not_reported_to_the_replacement_session(self):
+    """A reconnect that starts while the lost session is still closing replaces it."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    close = local._rs._close
+    gate = asyncio.Event()
+    held = []
+
+    async def _held_close():
+      if not held:  # hold the lost session's close open
+        held.append(True)
+        await gate.wait()
+      await close()
+
+    local._rs._close = _held_close
+    self.panel.close_sessions()
+    await _until(lambda: held, what='the loss cleanup')
+    reconnect = asyncio.create_task(local.connect())
+    self.addCleanup(reconnect.cancel)
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.wait_for(reconnect, WAIT)
+
+    errors = []
+
+    async def _collect(error):
+      errors.append(error)
+
+    local.add_error_handler(_collect)  # receives anything still undelivered
+    await asyncio.sleep(0.1)
+    self.assertFalse([e for e in errors if isinstance(e, ConnectionLostError)], errors)
+    self.assertTrue(local._rs.connected)
+
+  async def test_a_cancelled_reconnect_does_not_hide_the_loss(self):
+    """Only a replacement that is running or open makes the loss stale."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    errors = []
+
+    async def _collect(error):
+      errors.append(error)
+
+    local.add_error_handler(_collect)
+    close = local._rs._close
+    gate = asyncio.Event()
+    held = []
+
+    async def _held_close():
+      if not held:  # hold the lost session's close open
+        held.append(True)
+        await gate.wait()
+      await close()
+
+    local._rs._close = _held_close
+    self.panel.close_sessions()
+    await _until(lambda: held, what='the loss cleanup')
+    reconnect = asyncio.create_task(local.connect())
+    await asyncio.sleep(0.05)
+    reconnect.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await reconnect
+    gate.set()
+
+    await _until(lambda: any(isinstance(e, ConnectionLostError) for e in errors),
+                 what='the loss report')
+    self.assertEqual(len(self.panel.sessions), 1, 'The cancelled reconnect never reached the panel.')
+
+  async def test_a_connect_after_disconnect_waits_for_the_failing_attempt(self):
+    """The attempt disconnect() stopped is still winding down: wait for it, do not refuse."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+    self.panel.rules['PSTT1?'] = [SILENT, SILENT]
+    attempt = asyncio.create_task(local.connect())
+    self.addCleanup(attempt.cancel)
+    await _until(lambda: len(self.panel.sessions) == 2
+                 and 'PSTT1?' in self.panel.sessions[1].received, what='partition discovery')
+
+    await asyncio.wait_for(local.disconnect(), WAIT)
+    await asyncio.wait_for(local.connect(), WAIT)
+
+    with self.assertRaises(CannotConnectError):
+      await attempt
+    self.assertTrue(local._rs.connected)
+    self.assertEqual(len(self.panel.open_sessions), 1)
+
+  async def _a_connect_in_its_reconnect_delay(self, local):
+    """Lose a short session, then start a connect() that waits out the reconnect delay."""
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.panel.close_sessions()
+    await _until(lambda: local._listen_task is None and not local._rs.connected,
+                 what='the loss cleanup')
+    attempt = asyncio.create_task(local.connect())
+    self.addCleanup(attempt.cancel)
+    await asyncio.sleep(0.05)  # well inside the delay
+    self.assertEqual(len(self.panel.sessions), 1)
+    return attempt
+
+  async def test_a_disconnect_while_a_connect_waits_is_honoured(self):
+    """A connect() waiting for a failing attempt must still lose to a later disconnect()."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    attempt = await self._a_connect_in_its_reconnect_delay(local)
+
+    await asyncio.wait_for(local.disconnect(), WAIT)  # the attempt will fail when it wakes
+    waiting = asyncio.create_task(local.connect())
+    self.addCleanup(waiting.cancel)
+    await asyncio.sleep(0.05)
+    self.assertFalse(waiting.done(), 'Wait for the failing attempt.')
+    await asyncio.wait_for(local.disconnect(), WAIT)
+
+    with self.assertRaises(CannotConnectError):
+      await asyncio.wait_for(waiting, WAIT)
+    with self.assertRaises(CannotConnectError):
+      await attempt
+    await asyncio.sleep(0.5)  # longer than the reconnect delay
+    self.assertEqual(self.panel.open_sessions, [], 'Open no session after disconnect() returned.')
+    self.assertEqual(len(self.panel.sessions), 1)
+
+  async def test_cancelling_a_waiting_connect_leaves_the_running_attempt_alone(self):
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    attempt = await self._a_connect_in_its_reconnect_delay(local)
+
+    await asyncio.wait_for(local.disconnect(), WAIT)
+    waiting = asyncio.create_task(local.connect())
+    await asyncio.sleep(0.05)
+    waiting.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await waiting
+
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect'):
+      await asyncio.wait_for(attempt, WAIT)
+    await asyncio.wait_for(local.connect(), WAIT)  # and the instance still connects
+    self.assertTrue(local._rs.connected)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_setup_reports_stop_once_a_handler_replaces_the_session(self):
+    """The rest of a replaced session's reports are stale: do not hand them to handlers."""
+    self._eager_tasks()
+    self.panel.rules['ZLBL*1?'] = [REFUSE]
+    self.panel.rules['ZLBL*2?'] = [REFUSE]  # two placeholder reports
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    calls = []
+
+    async def _reconnect(error):
+      calls.append(error)
+      await local.connect()
+
+    local.add_error_handler(_reconnect)
+    await asyncio.wait_for(local.connect(), WAIT)
+    await _until(lambda: len(self.panel.sessions) == 2 and local._rs.connected,
+                 what='the reconnect')
+    await asyncio.sleep(0.1)
+
+    self.assertEqual(len(calls), 1, calls)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_held_reports_stop_once_a_late_handler_closes_the_session(self):
+    """Reports kept for a handler added after connect() go stale like the others."""
+    self._eager_tasks()
+    self.panel.rules['ZLBL*1?'] = [REFUSE]
+    self.panel.rules['ZLBL*2?'] = [REFUSE]  # two placeholder reports, held: no handler yet
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    await asyncio.wait_for(local.connect(), WAIT)
+    calls = []
+
+    async def _disconnect(error):
+      calls.append(error)
+      await local.disconnect()
+
+    local.add_error_handler(_disconnect)
+    await asyncio.sleep(0.1)
+
+    self.assertEqual(len(calls), 1, calls)
+
+  async def test_a_connect_after_a_failed_connect_runs(self):
+    self.panel.rules['PNLCNF'] = [REFUSE]
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    with self.assertRaises(CannotConnectError):
+      await asyncio.wait_for(local.connect(), WAIT)
+
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.assertTrue(local._rs.connected)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_handler_that_disconnects_on_a_setup_push_leaves_no_listener(self):
+    """A push queued during setup must not reach handlers before connect() stores its listener."""
+    self._eager_tasks()
+    self.panel.push_before['SSTT?'] = 'ZSTT9=O---'  # a zone that was not read
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    done = asyncio.Event()
+
+    async def _disconnect(error):
+      await local.disconnect()
+      done.set()
+
+    local.add_error_handler(_disconnect)
+    await asyncio.wait_for(local.connect(), WAIT)
+    await asyncio.wait_for(done.wait(), WAIT)
+    await asyncio.sleep(0.05)
+
+    self.assertIsNone(local._listen_task)
+    listeners = [t for t in asyncio.all_tasks() if not t.done()
+                 and t.get_coro().__qualname__ == 'RiscoLocal._listen']
+    self.assertEqual(listeners, [])
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_setup_report_handler_can_reconnect_with_eager_tasks(self):
+    """Reports go out once connect() has finished, so a reconnect from one is not refused."""
+    self._eager_tasks()
+    self.panel.rules['ZLBL*1?'] = [REFUSE]  # one placeholder report
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(local.disconnect)
+    reconnected = asyncio.Event()
+
+    async def _reconnect(error):
+      await local.connect()  # replaces the session connect() just set up
+      reconnected.set()
+
+    local.add_error_handler(_reconnect)
+    await asyncio.wait_for(local.connect(), WAIT)
+    await asyncio.wait_for(reconnected.wait(), WAIT)
+
+    self.assertTrue(local._rs.connected)
+    self.assertEqual(len(self.panel.sessions), 2)
+    self.assertEqual(len(self.panel.open_sessions), 1)
+
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_is_honoured(self):
+    """disconnect() returning means closed: a reconnect still closing the old session must not reopen."""
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    await asyncio.wait_for(local.connect(), WAIT)
+    self.addAsyncCleanup(local.disconnect)
+
+    self.panel.rules['DCN'] = SILENT  # hold the old session's close open
+    with patch_timing(DISCONNECT_TIMEOUT=1.0):
+      reconnect = asyncio.create_task(local.connect())
+      self.addCleanup(reconnect.cancel)
+      await _until(lambda: 'DCN' in self.panel.sessions[0].received, what='DCN')
+      await asyncio.wait_for(local.disconnect(), WAIT)
+
+      with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+        await asyncio.wait_for(reconnect, WAIT)
+
+    await asyncio.sleep(0.5)  # longer than the reconnect delay
+    self.assertEqual(len(self.panel.sessions), 1, 'Open no session after disconnect() returned.')
+    self.assertIsNone(local._listen_task)
+
+  async def test_an_empty_object_range_reads_nothing(self):
+    local = RiscoLocal('127.0.0.1', self.panel.port, '1234')
+    asked = []
+
+    async def create(object_id, reports):
+      asked.append(object_id)
+
+    for count in (0, -1):
+      self.assertEqual(await local._get_objects(1, count, create), {})
+    self.assertEqual(asked, [])
 
   async def test_a_panel_answering_no_zone_query_fails_the_connect_quickly(self):
     """Fail discovery after two unanswered attempts without waiting for every zone to time out."""
@@ -735,22 +1206,33 @@ class RecoveryTest(ScriptedPanelTestCase):
     that must not be re-initialised every few seconds: the reconnect delay
     doubles with each short session, up to the cap.
     """
-    self.panel.rules['CLOCK'] = REFUSE_NO_ID
     supervisor = await self._connected_supervisor()
-
-    await _until(lambda: len(self.panel.sessions) >= 6, timeout=30,
-                 what='six sessions')
+    # Only after the first connect: setup must not race three keep-alives.
+    self.panel.rules['CLOCK'] = REFUSE_NO_ID
+    # Every session here is short, however long discovery takes on this machine.
+    with patch_timing(STABLE_SESSION=60.0):
+      await _until(lambda: len(self.panel.sessions) >= 6, timeout=30,
+                   what='six sessions')
 
     gaps = self.reconnect_gaps()[:5]
     expected = [min(RECONNECT_DELAY * 2 ** n, MAX_RECONNECT_DELAY) for n in range(1, 6)]
+    # Minimums only: wall-clock overhead varies by machine. The exact doubling
+    # and cap are pinned with a fake clock in test_risco_socket_resilience.
     for gap, minimum in zip(gaps, expected):
       self.assertGreaterEqual(gap, minimum - SLACK, f'gaps {gaps}, expected at least {expected}')
     self.assert_one_session_at_a_time()
 
   async def test_a_session_that_survives_resets_the_backoff(self):
-    self.panel.rules['CLOCK'] = REFUSE_NO_ID
     supervisor = await self._connected_supervisor()
-    await _until(lambda: len(self.panel.sessions) >= 3, timeout=10, what='three sessions')
+    # Only after the first connect: setup must not race three keep-alives.
+    self.panel.rules['CLOCK'] = REFUSE_NO_ID
+    # The failing sessions count as short, however long discovery takes here.
+    with patch_timing(STABLE_SESSION=60.0):
+      await _until(lambda: len(self.panel.sessions) >= 3, timeout=10, what='three sessions')
+    backed_off = self.reconnect_gaps()
+    # After two short sessions in a row the delay is four times the base.
+    self.assertGreaterEqual(backed_off[1], 4 * RECONNECT_DELAY - SLACK,
+                            f'gaps {backed_off}: short sessions first increase the delay')
 
     del self.panel.rules['CLOCK']
     # Let a session outlive STABLE_SESSION (2s here), then drop it.

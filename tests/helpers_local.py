@@ -205,6 +205,7 @@ class FakeSocket:
     self.reply_seqs = {}
     self.queue = asyncio.Queue()
     self.connected = False
+    self.closing = False  # disconnect() was called since the last connect()
     self.connect_calls = 0
     self.disconnect_calls = 0
     self.abort_calls = 0
@@ -216,9 +217,11 @@ class FakeSocket:
   async def connect(self):
     self.connect_calls += 1
     self.connected = True
+    self.closing = False
 
   async def disconnect(self):
     self.disconnect_calls += 1
+    self.closing = True
     if self.disconnect_error is not None:
       raise self.disconnect_error
     self.connected = False

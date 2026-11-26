@@ -19,7 +19,10 @@ class RiscoCrypt:
   def __init__(self, encoding='utf-8'):
     self._pseudo_buffer = None
     self._crc_decoded = list(map(int, base64.b64decode(CRC_ARRAY_BASE64).decode("utf-8")[1:-1].split(',')))
+    # Outgoing mode: on once a readable encrypted frame arrives.
     self.encrypted_panel = False
+    # An encrypted frame arrived before the panel id was known.
+    self.encrypted_before_id = False
     self._encoding = encoding
 
   def set_panel_id(self, panel_id):
@@ -46,10 +49,10 @@ class RiscoCrypt:
     return encrypted;
 
   def decode(self, chars):
-    # Encryption is sticky for the session, even after a stray plaintext frame.
-    self.encrypted_panel = self.encrypted_panel or _is_encrypted(chars)
-    if self.encrypted_panel and not self.has_panel_id:
-      # Encrypted before the panel id is known: nothing here can be read.
+    flagged = _is_encrypted(chars)
+    if flagged and not self.has_panel_id:
+      # Encrypted before the panel id is known: this frame cannot be read.
+      self.encrypted_before_id = True
       return [None, '', False]
     decrypted_chars = self._decrypt_chars(chars)
     body, crc = decrypted_chars.split(b'\x17')
@@ -64,6 +67,10 @@ class RiscoCrypt:
       cmd_id = int(command[:2])
       command_string = command[2:]
 
+    # Encryption is sticky for the session, even after a stray plaintext frame,
+    # but only a readable encrypted frame turns it on: noise must not.
+    if flagged and valid:
+      self.encrypted_panel = True
     return [cmd_id, command_string, valid]
 
   def _encrypt_chars(self, chars, encrypt):

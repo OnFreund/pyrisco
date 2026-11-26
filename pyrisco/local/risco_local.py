@@ -26,6 +26,13 @@ class RiscoLocal:
     self._rs = RiscoSocket(host, port, code, **kwargs)
     self._panel_capabilities = None
     self._listen_task = None
+    # Counts disconnect() calls, so connect() can tell one arrived while it ran.
+    self._disconnects = 0
+    # Counts connect() calls, so queued reports can tell their session was replaced.
+    self._connects = 0
+    self._connecting = False
+    self._attempt_disconnects = 0
+    self._attempt_done = None
     self._system_handlers = []
     self._zone_handlers = []
     self._partition_handlers = []
@@ -45,13 +52,44 @@ class RiscoLocal:
     self._snapshots = {}
 
   async def connect(self):
+    entered = self._disconnects
+    while self._connecting:
+      if self._disconnects == self._attempt_disconnects:
+        # Two attempts would share one socket and close each other's sessions.
+        raise CannotConnectError('connect() is already running')
+      # The running attempt is failing because of a disconnect(): let it end first.
+      await asyncio.shield(self._attempt_done)
+      if self._disconnects != entered:
+        # disconnect() was called while this connect() waited: stay disconnected.
+        raise CannotConnectError('disconnect() was called while connecting')
+    self._connecting = True
+    self._connects += 1
+    disconnects = self._attempt_disconnects = self._disconnects
+    self._attempt_done = asyncio.get_running_loop().create_future()
+    try:
+      await self._connect(disconnects)
+    finally:
+      self._connecting = False
+      self._attempt_done.set_result(None)
+    # Only now, with connect() finished, may handlers act on the new session.
+    connects = self._connects
+    for error in self._left_out:
+      if self._connects != connects or self._disconnects != disconnects:
+        break  # a handler replaced or closed this session: its reports are stale
+      self._error(error)
+
+  async def _connect(self, disconnects):
     if self._listen_task is not None:
       # Close the previous session and listener first.
-      await self.disconnect()
+      await self._close_session()
+    if self._disconnects != disconnects:
+      # disconnect() was called while the previous session closed: stay closed.
+      raise CannotConnectError('disconnect() was called while connecting')
     self._left_out = []
     self._undelivered.clear()
     self._snapshots = {}
     await self._rs.connect()
+    session = self._rs.queue  # one queue per session
     try:
       panel_type = await self._rs.send_result_command("PNLCNF")
       self._legacy_panel = not panel_type.startswith("RP")
@@ -60,15 +98,21 @@ class RiscoLocal:
       else:
         firmware = await self._rs.send_result_command("FSVER?")
       self._panel_capabilities = panel_capabilities(panel_type, firmware)
-      self._id = await self._rs.send_result_command("PNLSERD")
-      self._zones = await self._init_zones()
-      self._partitions = await self._init_partitions()
-      self._system = await self._init_system()
+      panel_id = await self._rs.send_result_command("PNLSERD")
+      zones = await self._init_zones()
+      partitions = await self._init_partitions()
+      system = await self._init_system()
+      if (self._rs.closing or self._rs.queue is not session
+          or self._disconnects != disconnects):
+        # disconnect() began or ended as the last answer arrived: never publish this session.
+        raise CommunicationError('disconnect() was called while connecting')
       # A usable panel requires a system and at least one partition.
-      if self._system is None:
+      if system is None:
         raise OperationError('Failed to read system status')
-      if not self._partitions:
+      if not partitions:
         raise OperationError('Panel reported no partitions')
+      # Publish together: a failed connect keeps the last complete snapshot.
+      self._id, self._zones, self._partitions, self._system = panel_id, zones, partitions, system
     except asyncio.CancelledError:
       # Abort synchronously: another cancellation could interrupt awaited cleanup.
       self._rs.abort()
@@ -85,8 +129,6 @@ class RiscoLocal:
 
     self._reported_unknown = set()
     self._discard_setup_errors()
-    for error in self._left_out:
-      self._error(error)
     self._listen_task = asyncio.create_task(self._listen(self._rs.queue))
 
   def _discard_setup_errors(self):
@@ -108,6 +150,10 @@ class RiscoLocal:
       pass
 
   async def disconnect(self):
+    self._disconnects += 1  # before any await: a running connect() must see it
+    await self._close_session()
+
+  async def _close_session(self):
     listen_task = self._listen_task
     self._listen_task = None
     try:
@@ -121,7 +167,10 @@ class RiscoLocal:
     remove = RiscoLocal._add_handler(self._error_handlers, handler)
     undelivered = list(self._undelivered)
     self._undelivered.clear()
+    connects, disconnects = self._connects, self._disconnects
     for error in undelivered:
+      if self._connects != connects or self._disconnects != disconnects:
+        break  # the handler replaced or closed the session: the rest are stale
       # This handler alone: handlers registered after it did not miss these,
       # and removing it before the delivery runs must not discard them.
       RiscoLocal._call_handlers((handler,), error)
@@ -178,7 +227,10 @@ class RiscoLocal:
     return await self._rs.send_ack_command(f'GARM*{group}={partition_id}')
 
   async def bypass_zone(self, zone_id, bypass):
-    """Bypass or unbypass a zone."""
+    """Bypass or unbypass a zone; raise CommunicationError without a live session."""
+    if self._listen_task is None or not self._rs.connected:
+      # ZBYPAS toggles: decide only from a snapshot of a live session.
+      raise CommunicationError('Not connected')
     if self.zones[zone_id].bypassed != bypass:
       await self._rs.send_ack_command(F'ZBYPAS={zone_id}')
 
@@ -239,6 +291,8 @@ class RiscoLocal:
 
     # Stop on first failure; preserve caller cancellation even if a child failed.
     tasks = [asyncio.create_task(_read(i)) for i in range(min, min+max)]
+    if not tasks:
+      return {}  # asyncio.wait() rejects an empty set
     try:
       await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
     finally:
@@ -300,7 +354,8 @@ class RiscoLocal:
     return Zone(self, zone_id, status, zone_type, label, partitions, groups, tech)
 
   async def _ask_twice(self, command):
-    """Retry a refused status/type once; _get_objects retries lost answers."""
+    """Retry a refused status/type once; a lost answer propagates (_get_objects
+    retries it per object; for SSTT? it fails connect)."""
     try:
       return await self._rs.send_status_query(command)
     except CommunicationError:
@@ -394,16 +449,35 @@ class RiscoLocal:
       task.add_done_callback(_handler_done)
 
   async def _listen(self, queue):
+    # Yield first: with an eager task factory, connect() must store this task
+    # before any handler it dispatches can call disconnect().
+    await asyncio.sleep(0)
     while True:
       try:
         item = await queue.get()
+        if self._listen_task is not asyncio.current_task():
+          # Detached by disconnect() or connect(), perhaps by a handler for the
+          # previous item: this session is no longer ours to report or close.
+          break
         if isinstance(item, READ_FAILURES):
           # Normalize terminal reads; prefer our close reason to the ensuing EOF.
           reason = self._rs.close_reason or _name(item)
           lost = ConnectionLostError(f'Connection lost: {reason}')
           lost.__cause__ = item
-          self._error(lost)
-          await self.disconnect()
+          disconnects = self._disconnects
+          try:
+            # Close before reporting, so a handler that reconnects is not undone.
+            await self._close_session()  # not a disconnect() request
+          except Exception:
+            pass  # the session is gone either way; never wait on its queue again
+          # Report it unless disconnect() was called, or a replacement is running
+          # or open, meanwhile: then that call's outcome is what counts.
+          # (A replacement waits on the socket's close lock, so `_connecting` normally
+          # decides; the queue check is a safeguard.)
+          current = self._rs.queue
+          replaced = self._connecting or (current is not None and current is not queue)
+          if not replaced and self._disconnects == disconnects:
+            self._error(lost)
           break
         if isinstance(item, Exception):
           self._error(item)

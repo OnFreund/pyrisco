@@ -780,7 +780,7 @@ class ListenerShutdownTest(unittest.IsolatedAsyncioTestCase):
     panel = _local(fake)
     errors = []
     panel.add_error_handler(_collect(errors))
-    queue = asyncio.Queue()
+    queue = fake.queue  # the session's queue, as connect() passes it
     queue.put_nowait(error)
     task = asyncio.create_task(panel._listen(queue))
     panel._listen_task = task
@@ -801,6 +801,71 @@ class ListenerShutdownTest(unittest.IsolatedAsyncioTestCase):
     """A clean close - by the panel, or by the keep-alive - is IncompleteReadError."""
     await self._listener_exits_on(asyncio.IncompleteReadError(b'', None))
 
+  async def test_a_failing_close_still_ends_the_listener(self):
+    """Its task reference is already gone, so a listener left waiting could never be cancelled."""
+    fake = FakeSocket()
+    fake.disconnect_error = OSError('close failed')
+    panel = _local(fake)
+    errors = []
+    panel.add_error_handler(_collect(errors))
+    queue = fake.queue  # the session's queue, as connect() passes it
+    queue.put_nowait(ConnectionResetError())
+    task = asyncio.create_task(panel._listen(queue))
+    panel._listen_task = task
+
+    await asyncio.wait_for(task, LOOP_TIMEOUT)
+    await settle()
+
+    self.assertEqual(len(errors), 1, errors)
+    self.assertIsInstance(errors[0], ConnectionLostError)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_listener_detached_by_a_handler_ignores_what_is_left_in_its_queue(self):
+    """A handler for one item disconnects at once; the loss queued behind it is not ours."""
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    self.addCleanup(loop.set_task_factory, None)
+    fake = FakeSocket(panel_responses(zones=(1,)))
+    panel = _local(fake)
+    await asyncio.wait_for(panel.connect(), LOOP_TIMEOUT)
+    errors = []
+
+    async def _disconnect_on_the_push(error):
+      errors.append(error)
+      if not isinstance(error, ConnectionLostError):
+        await panel.disconnect()  # completes without yielding on the fake socket
+
+    panel.add_error_handler(_disconnect_on_the_push)
+    fake.queue.put_nowait('ZSTT9=O---')  # a zone that was not read
+    fake.queue.put_nowait(ConnectionResetError())
+    await settle()
+
+    self.assertFalse([e for e in errors if isinstance(e, ConnectionLostError)], errors)
+    self.assertEqual(fake.disconnect_calls, 1, 'Close only once, for the handler.')
+
+  async def test_a_loss_is_not_reported_after_disconnect_was_called(self):
+    """disconnect() during the loss cleanup: the caller closed it, so no reconnect is wanted."""
+    fake = FakeSocket()
+    panel = _local(fake)
+    errors = []
+    panel.add_error_handler(_collect(errors))
+    queue = fake.queue  # the session's queue, as connect() passes it
+    queue.put_nowait(ConnectionResetError())
+    close = fake.disconnect
+
+    async def _close_with_a_disconnect():
+      fake.disconnect = close
+      await panel.disconnect()  # a caller's disconnect() lands during the cleanup
+      await close()
+
+    fake.disconnect = _close_with_a_disconnect
+    task = asyncio.create_task(panel._listen(queue))
+    panel._listen_task = task
+    await asyncio.wait_for(task, LOOP_TIMEOUT)
+    await settle()
+
+    self.assertEqual(errors, [])
+
   async def test_connection_reset_exits_listener(self):
     await self._listener_exits_on(ConnectionResetError())
 
@@ -817,7 +882,7 @@ class ListenerShutdownTest(unittest.IsolatedAsyncioTestCase):
   async def _listener_survives(self, error):
     fake = FakeSocket()
     panel = _local(fake)
-    queue = asyncio.Queue()
+    queue = fake.queue  # the session's queue, as connect() passes it
     queue.put_nowait(error)
     task = asyncio.create_task(panel._listen(queue))
     panel._listen_task = task
