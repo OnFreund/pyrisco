@@ -21,12 +21,12 @@ class Alarm:
   def partitions(self):
     """Alarm partitions."""
     if self._partitions is None:
-      self._partitions = {p["id"]: Partition(self._api, p) for p in self._raw["partitions"]}
+      self._partitions = {p["id"]: Partition(self._api, p) for p in self._raw.get("partitions") or []}
     return self._partitions
 
   @property
   def zones(self):
     """Alarm zones."""
     if self._zones is None:
-      self._zones = {z["zoneID"]: Zone(self._api, z) for z in self._raw["zones"]}
+      self._zones = {z["zoneID"]: Zone(self._api, z) for z in self._raw.get("zones") or []}
     return self._zones
