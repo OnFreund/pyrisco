@@ -19,11 +19,18 @@ class RiscoCrypt:
   def __init__(self, encoding='utf-8'):
     self._pseudo_buffer = None
     self._crc_decoded = list(map(int, base64.b64decode(CRC_ARRAY_BASE64).decode("utf-8")[1:-1].split(',')))
+    # Outgoing mode: on once a readable encrypted frame arrives.
     self.encrypted_panel = False
+    # An encrypted frame arrived before the panel id was known.
+    self.encrypted_before_id = False
     self._encoding = encoding
 
   def set_panel_id(self, panel_id):
     self._pseudo_buffer = RiscoCrypt._create_pseudo_buffer(panel_id)
+
+  @property
+  def has_panel_id(self):
+    return self._pseudo_buffer is not None
 
   def encode(self, cmd_id, command, force_crypt=False):
     encrypted = bytearray()
@@ -42,11 +49,16 @@ class RiscoCrypt:
     return encrypted;
 
   def decode(self, chars):
-    self.encrypted_panel = _is_encrypted(chars)
+    flagged = _is_encrypted(chars)
+    if flagged and not self.has_panel_id:
+      # Encrypted before the panel id is known: this frame cannot be read.
+      self.encrypted_before_id = True
+      return [None, '', False]
     decrypted_chars = self._decrypt_chars(chars)
-    decrypted = decrypted_chars.decode(self._encoding)
-    raw_command = decrypted[0:decrypted.index('\x17')+1]
-    command, crc = decrypted.split('\x17')
+    body, crc = decrypted_chars.split(b'\x17')
+    # Validate received bytes before decoding labels with replacement characters.
+    valid = self._valid_crc(body + b'\x17', crc)
+    command = body.decode(self._encoding, errors='replace')
 
     if command[0] in ['N','B']:
       cmd_id = None
@@ -55,7 +67,11 @@ class RiscoCrypt:
       cmd_id = int(command[:2])
       command_string = command[2:]
 
-    return [cmd_id, command_string, self._valid_crc(raw_command, crc)]
+    # Encryption is sticky for the session, even after a stray plaintext frame,
+    # but only a readable encrypted frame turns it on: noise must not.
+    if flagged and valid:
+      self.encrypted_panel = True
+    return [cmd_id, command_string, valid]
 
   def _encrypt_chars(self, chars, encrypt):
     position = 0;
@@ -100,22 +116,15 @@ class RiscoCrypt:
       pseudo_buffer[i] = (pid & buffer_length)
     return pseudo_buffer
 
-  def _valid_crc(self, command, crc):
-    if len(crc) != 4:
-      return False
-
-    for char in crc:
-      if ord(char) > 127:
-        return False
-
-    computed = self._get_crc(command)
-    return computed == crc
+  def _valid_crc(self, data, crc):
+    return len(crc) == 4 and self._crc_of(data).encode('ascii') == crc
 
   def _get_crc(self, command):
-    crc_base = 65535
-    byte_buffer = bytearray(command, self._encoding)
+    return self._crc_of(bytearray(command, self._encoding))
 
-    for b in byte_buffer:
+  def _crc_of(self, data):
+    crc_base = 65535
+    for b in data:
       crc_base = crc_base >> 8 ^ self._crc_decoded[crc_base & 255 ^ b]
 
     return f'{crc_base:04X}'

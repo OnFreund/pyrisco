@@ -144,7 +144,6 @@ async def test_local():
       print(f'Partition handler: {partition_id}, {vars(partition)}')
     remove_partition = r.add_partition_handler(_partition)
     
-    await r.connect()
     # partitions and zones are one-based in Cloud
     print(r.partitions[1].armed)
     
@@ -172,6 +171,36 @@ async def test_local():
 
 asyncio.run(test_local())
 ```
+
+#### Errors and connection loss (local)
+
+`RiscoLocal` holds one TCP session to the panel. Error handlers receive:
+
+* `ConnectionLostError` - the session ended without `disconnect()`: the panel closed or reset it, it stopped answering the keep-alive, or its frames became unreadable. The object has disconnected itself; call `connect()` again, on it or on a new instance, to carry on. It is not reported if `disconnect()` is called, or a `connect()` is still running or has replaced the session, while the lost session is being closed: that call's outcome says what happened. The socket error is the `__cause__`. It is also a `ConnectionResetError`, for code written against earlier versions.
+* `CommunicationError` - an answer was lost or unreadable, but the session is still up. If the link itself is gone, a `ConnectionLostError` follows.
+* `OperationError` - the panel refused something, sent a status for a zone or partition that was not read at connect, or refused the status of a zone at connect, which is then left out.
+
+Handlers run as tasks. An exception a handler raises is logged (`pyrisco.local.risco_local`); `disconnect()` does not cancel handlers still running. Errors reported while no error handler is registered - typically between `connect()` returning and the consumer adding its handlers - are passed to the first one added (at most the last 20).
+
+A zone left out at connect stays out until the next `connect()`; its pushes are reported once as a status for an unknown zone. Reconnect to bring it back. A label, partition or group the panel refuses or does not answer at connect gets a placeholder, reported the same way: the zone's own number as its name, and no partitions or groups - which reads as "in none", not as "unknown".
+
+Status pushes that arrive while `connect()` runs are applied after it, unless they are older than the status the zone, partition or system was read with.
+
+`connect()` raises:
+
+* `UnauthorizedError` - the panel rejected the access code (`N06`).
+* `CannotConnectError` - the panel could not be reached, did not answer as expected, or reconnecting now would be too soon.
+
+Other exceptions are raised as they are, such as a `KeyError` for an unsupported panel model.
+
+A failed `connect()` leaves `id`, `zones`, `partitions` and `system` unchanged (`None` before the first successful one). `bypass_zone()` (and `Zone.bypass()`) decides from the zone's current status whether to send the toggle, so it raises `CommunicationError` while there is no live session, including during `connect()`. A `disconnect()` made while `connect()` is still setting up wins: that `connect()` raises (usually `CannotConnectError`) and leaves the panel disconnected, and no connection loss is reported for it. One `connect()` runs at a time per instance: calling it again while one is still running raises `CannotConnectError`, unless the running one is ending because of a `disconnect()`, in which case it waits for it (and still fails if another `disconnect()` comes meanwhile). Error handlers for problems found during `connect()` run once it has finished.
+
+Reconnects are paced per panel:
+
+* Every session that got as far as a TCP connection, a refused login included, is followed by a few seconds' delay, which `connect()` waits out itself.
+* Sessions lost soon after connecting make that delay grow. `connect()` then raises rather than wait, so retry later.
+* A panel that does not accept the TCP connection at all is not paced - leave a gap between attempts yourself.
+* After a process restart the panel may still hold the previous session's state. The first `connect()` can then fail at once ("still encrypting"), and a retry a few seconds later succeeds.
 
 ## Testing PRs
 

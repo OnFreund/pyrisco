@@ -138,11 +138,23 @@ class UnauthorizedError(Exception):
 
 
 class CannotConnectError(Exception):
-  """Exception to indicate an error in authorization."""
+  """Exception to indicate that no usable session could be established."""
 
 
 class OperationError(Exception):
   """Exception to indicate an error in operation."""
+
+
+class CommunicationError(OperationError):
+  """No usable answer: timeout, lost connection, or corrupt reply.
+  This does not imply that the panel refused the command.
+  """
+
+
+class ConnectionLostError(CommunicationError, ConnectionResetError):
+  """Local session ended; reconnect. __cause__ is the socket error.
+  Also a ConnectionResetError for compatibility; see README for reporting.
+  """
 
 
 class RetryableOperationError(OperationError):
