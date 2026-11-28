@@ -111,6 +111,8 @@ class ScriptedPanel:
     # command -> a reply to send under the command's own id just before its
     # real reply (once): a stale duplicate of an earlier reply.
     self.duplicate_before = {}
+    # command -> an asyncio.Event the answer waits for (once).
+    self.hold_before = {}
     # Encrypt from the first reply, as a panel still in the previous
     # session's state does; and a delay before every reply.
     self.encrypt_from_start = False
@@ -250,6 +252,9 @@ class ScriptedPanel:
         duplicate = self.duplicate_before.pop(command, None)
         if duplicate is not None:
           self._write(session, reply_id, duplicate)
+        hold = self.hold_before.pop(command, None)
+        if hold is not None:
+          await hold.wait()
         if self.reply_delay:
           await asyncio.sleep(self.reply_delay)
 

@@ -438,6 +438,8 @@ class RiscoLocal:
     RiscoLocal._call_handlers(self._error_handlers, error)
 
   def _call_handlers(handlers, *params):
+    # Handlers are looked up when the delivery task runs: one added before then gets it, one removed does not.
+    # (Retained errors are the exception: add_error_handler passes them to the handler just added.)
     if len(handlers) > 0:
       async def _gather():
         results = await asyncio.gather(*[h(*params) for h in handlers], return_exceptions=True)

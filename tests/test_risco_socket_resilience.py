@@ -28,6 +28,15 @@ from pyrisco.common import CannotConnectError, OperationError
 from pyrisco.local.risco_crypt import RiscoCrypt
 from pyrisco.local import risco_socket
 from pyrisco.local.risco_socket import MAX_CMD_ID, RiscoSocket
+from scripted_panel import ScriptedPanel
+
+
+async def _until(predicate, what):
+  deadline = time.monotonic() + LOOP_TIMEOUT
+  while not predicate():
+    if time.monotonic() > deadline:
+      raise AssertionError(f'timed out waiting for {what}')
+    await asyncio.sleep(0.01)
 
 
 class CommandIdTest(unittest.IsolatedAsyncioTestCase):
@@ -1248,6 +1257,7 @@ class ConnectTest(unittest.IsolatedAsyncioTestCase):
     await asyncio.wait_for(closed.wait(), LOOP_TIMEOUT)
     self.assertIsNone(sock._writer)
     self.assertIsNone(sock._listen_task)
+    self.assertFalse(sock._connecting, 'A cancelled connect() must not refuse the next one.')
 
   async def test_a_failed_handshake_closes_and_raises_cannot_connect(self):
     closed = asyncio.Event()
@@ -1286,6 +1296,435 @@ class ConnectTimeoutTest(unittest.IsolatedAsyncioTestCase):
 
     self.assertIn('192.0.2.1', str(caught.exception))
     self.assertIsNone(sock._writer)
+
+
+class _HangingDial:
+  """An open_connection that never completes; records whether it was cancelled.
+
+  Once cancelled it finishes only when `release` is set, as a dial slow to
+  wind down would; then it returns `result` if one is set, as a dial whose
+  connection completed regardless would.
+  """
+
+  def __init__(self):
+    self.started = asyncio.Event()
+    self.release = asyncio.Event()
+    self.release.set()
+    self.cancelled = False
+    self.result = None
+
+  async def open(self, host, port):
+    self.started.set()
+    try:
+      await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+      self.cancelled = True
+      await self.release.wait()
+      if self.result is None:
+        raise
+    return self.result
+
+
+class DialTest(unittest.IsolatedAsyncioTestCase):
+  """disconnect() and cancellation while the TCP connection is being set up."""
+
+  def setUp(self):
+    reset_reconnect_history()
+    self.addCleanup(reset_reconnect_history)
+
+  def _dial(self, open_connection):
+    patch = unittest.mock.patch.object(risco_socket.asyncio, 'open_connection', open_connection)
+    patch.start()
+    self.addCleanup(patch.stop)
+
+  def assert_paced(self, sock):
+    self.assertGreater(sock._seconds_until_reconnect(time.monotonic()), 0,
+                       'A connection that reached the panel paces the next connect().')
+
+  async def test_disconnect_interrupts_a_dial_in_progress(self):
+    """Otherwise connect() waits out CONNECT_TIMEOUT and the panel sees a connection after disconnect()."""
+    dial = _HangingDial()
+    dial.release.clear()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = asyncio.create_task(sock.connect())
+    self.addCleanup(connecting.cancel)
+    self.addCleanup(dial.release.set)
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    stopping = asyncio.create_task(sock.disconnect())
+    await settle(5)
+    self.assertTrue(dial.cancelled, 'Cancel the dial.')
+    self.assertFalse(stopping.done(), 'Wait for the cancelled dial to end.')
+    dial.release.set()
+    await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+      await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+    self.assertIsNone(sock._writer)
+
+  async def test_a_dial_that_ignores_its_cancellation_does_not_hold_up_disconnect(self):
+    dial = _HangingDial()
+    dial.release.clear()  # never ends while the test waits
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = asyncio.create_task(sock.connect())
+    self.addCleanup(connecting.cancel)
+    self.addCleanup(dial.release.set)
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    with patch_timing(DISCONNECT_TIMEOUT=0.05):
+      await asyncio.wait_for(sock.disconnect(), LOOP_TIMEOUT)
+    dial.release.set()
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+      await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+
+  async def test_a_disconnect_after_a_swallowed_cancellation_still_fails_the_connect_retryably(self):
+    """A task that once caught a CancelledError without uncancel() still counts as cancelling."""
+    dial = _HangingDial()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+
+    async def _connect_after_a_swallowed_cancel():
+      asyncio.current_task().cancel()
+      try:
+        await asyncio.sleep(0)
+      except asyncio.CancelledError:
+        pass  # no uncancel(): cancelling() stays at 1
+      await sock.connect()
+
+    connecting = asyncio.create_task(_connect_after_a_swallowed_cancel())
+    self.addCleanup(connecting.cancel)
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    await asyncio.wait_for(sock.disconnect(), LOOP_TIMEOUT)
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+      await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+
+  async def test_a_cancellation_pending_as_connect_starts_wins_over_a_queued_disconnect(self):
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    self._dial(_HangingDial().open)
+    stopping = []
+
+    async def _cancelled_then_connect():
+      stopping.append(asyncio.create_task(sock.disconnect()))  # runs once connect() first waits
+      asyncio.current_task().cancel()
+      await sock.connect()
+
+    with self.assertRaises(asyncio.CancelledError):
+      await asyncio.wait_for(asyncio.create_task(_cancelled_then_connect()), LOOP_TIMEOUT)
+    await asyncio.wait_for(stopping[0], LOOP_TIMEOUT)
+    self.assertIsNone(sock._writer)
+
+  async def test_a_caller_cancellation_as_disconnect_stops_the_dial_is_still_a_cancellation(self):
+    dial = _HangingDial()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = asyncio.create_task(sock.connect())
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    connecting.cancel()
+    await asyncio.wait_for(sock.disconnect(), LOOP_TIMEOUT)
+    with self.assertRaises(asyncio.CancelledError):
+      await connecting
+    self.assertTrue(dial.cancelled)
+
+  async def test_a_dial_completed_as_the_caller_cancels_is_closed(self):
+    """The dial has its result, but connect() is cancelled before it resumes to take it."""
+    writer = FakeWriter()
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = []
+
+    async def _open(host, port):
+      # Runs ahead of connect()'s wake-up, which this dial's completion schedules.
+      asyncio.get_running_loop().call_soon(connecting[0].cancel)
+      return asyncio.StreamReader(), writer
+
+    self._dial(_open)
+    connecting.append(asyncio.create_task(sock.connect()))
+    with self.assertRaises(asyncio.CancelledError):
+      await connecting[0]
+    self.assertTrue(writer.transport.closed, 'Close the connection nobody took.')
+    self.assertIsNone(sock._writer)
+    self.assert_paced(sock)
+
+  async def test_a_dial_completed_as_the_connect_timeout_expires_is_closed(self):
+    await self._assert_a_dial_completed_as_the_connect_timeout_expires_is_closed()
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_dial_completed_as_the_connect_timeout_expires_is_closed_with_eager_tasks(self):
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    self.addCleanup(loop.set_task_factory, None)
+    await self._assert_a_dial_completed_as_the_connect_timeout_expires_is_closed()
+
+  async def _assert_a_dial_completed_as_the_connect_timeout_expires_is_closed(self):
+    writer = FakeWriter()
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    timeouts = []
+    real_timeout = asyncio.timeout
+
+    def _timeout(delay):
+      timeouts.append(real_timeout(delay))
+      return timeouts[-1]
+
+    async def _open(host, port):
+      # An eager dial starts before connect() has entered its timeout.
+      await asyncio.sleep(0)
+      # Expire connect()'s timeout now: it fires before connect() resumes to take the result.
+      timeouts[-1].reschedule(asyncio.get_running_loop().time())
+      return asyncio.StreamReader(), writer
+
+    self._dial(_open)
+    with unittest.mock.patch.object(risco_socket.asyncio, 'timeout', _timeout):
+      with self.assertRaisesRegex(CannotConnectError, 'Timed out'):
+        await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+    self.assertTrue(writer.transport.closed, 'Close the connection nobody took.')
+    self.assertIsNone(sock._writer)
+    self.assert_paced(sock)
+
+  def _a_dial_that_ends_late(self):
+    """A dial whose cancellation cleanup holds until released, then returns a connection."""
+    dial = _HangingDial()
+    dial.release.clear()
+    dial.writer = FakeWriter()
+    dial.result = (asyncio.StreamReader(), dial.writer)
+    self.addCleanup(dial.release.set)
+    return dial
+
+  async def _end_connect_while_its_dial_cleans_up(self, sock, dial, timed_out):
+    """Start connect(), then end it by cancellation or timeout while the dial's cleanup holds."""
+    connecting = asyncio.create_task(sock.connect())
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+    if timed_out:
+      with self.assertRaisesRegex(CannotConnectError, 'Timed out'):
+        await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+    else:
+      connecting.cancel()
+      with self.assertRaises(asyncio.CancelledError):
+        await connecting
+
+  async def _assert_a_retry_waits_for_the_old_dial(self, timed_out):
+    old, new = self._a_dial_that_ends_late(), _HangingDial()
+    dialled = []
+
+    async def _open(host, port):
+      # What the panel would see as the dial starts: is the old connection still open?
+      dialled.append((old.writer.transport.closed, time.monotonic()))
+      return await (old if len(dialled) == 1 else new).open(host, port)
+
+    self._dial(_open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    with patch_timing(CONNECT_TIMEOUT=0.1 if timed_out else 10, DISCONNECT_TIMEOUT=2.0,
+                      RECONNECT_DELAY=0.3):
+      await self._end_connect_while_its_dial_cleans_up(sock, old, timed_out)
+      await asyncio.sleep(0.05)
+      # The old dial ends in the same loop turn as the retry starts.
+      old.release.set()
+      released = time.monotonic()
+      retry = asyncio.create_task(sock.connect())
+      await asyncio.wait_for(new.started.wait(), LOOP_TIMEOUT)
+      retry.cancel()
+      await asyncio.gather(retry, return_exceptions=True)
+
+    closed, dialled_at = dialled[1]
+    self.assertTrue(closed, 'Close the old connection before dialling again.')
+    self.assertGreaterEqual(dialled_at - released, 0.3 - 0.05, 'Wait out the delay it started.')
+
+  async def test_a_retry_after_a_cancelled_connect_waits_for_its_dial_to_end(self):
+    await self._assert_a_retry_waits_for_the_old_dial(timed_out=False)
+
+  async def test_a_retry_after_a_timed_out_connect_waits_for_its_dial_to_end(self):
+    await self._assert_a_retry_waits_for_the_old_dial(timed_out=True)
+
+  async def test_disconnect_returns_only_once_a_dial_ending_in_the_same_turn_is_closed(self):
+    dial = self._a_dial_that_ends_late()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    await self._end_connect_while_its_dial_cleans_up(sock, dial, timed_out=False)
+
+    async def _disconnect():
+      await sock.disconnect()
+      return dial.writer.transport.closed
+
+    dial.release.set()
+    closed = await asyncio.wait_for(asyncio.create_task(_disconnect()), LOOP_TIMEOUT)
+    self.assertTrue(closed, 'disconnect() returned with the old connection still open.')
+
+  async def test_a_connect_refuses_to_dial_while_an_earlier_dial_is_still_ending(self):
+    """The panel must never see two connections from one socket."""
+    panel = await ScriptedPanel().start()
+    self.addAsyncCleanup(panel.stop)
+    old = self._a_dial_that_ends_late()
+    real_open = asyncio.open_connection
+    calls = []
+
+    async def _open(host, port):
+      calls.append((host, port))
+      return await (old.open(host, port) if len(calls) == 1 else real_open(host, port))
+
+    self._dial(_open)
+    sock = RiscoSocket('127.0.0.1', panel.port, '1234')
+    self.addAsyncCleanup(sock.disconnect)
+    with patch_timing(DISCONNECT_TIMEOUT=0.1, RECONNECT_DELAY=0.3):
+      await self._end_connect_while_its_dial_cleans_up(sock, old, timed_out=False)
+      with self.assertRaisesRegex(CannotConnectError, 'still ending'):
+        await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+      self.assertEqual(len(calls), 1, 'Do not dial while the old dial is still ending.')
+
+      old.release.set()
+      await settle(5)
+      self.assertTrue(old.writer.transport.closed)
+      started = time.monotonic()
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+
+    self.assertGreaterEqual(time.monotonic() - started, 0.3 - 0.05, 'Wait out the delay it started.')
+    self.assertTrue(sock.connected)
+    self.assertEqual(len(panel.sessions), 1)
+
+  async def test_a_connect_stopped_while_it_waits_for_an_earlier_dial_does_not_wait_out_pacing(self):
+    old = self._a_dial_that_ends_late()
+    self._dial(old.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    with patch_timing(DISCONNECT_TIMEOUT=2.0, RECONNECT_DELAY=1.0):
+      await self._end_connect_while_its_dial_cleans_up(sock, old, timed_out=False)
+      retry = asyncio.create_task(sock.connect())
+      stopping = asyncio.create_task(sock.disconnect())
+      await settle(5)
+      old.release.set()
+      released = time.monotonic()
+      with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+        await asyncio.wait_for(retry, LOOP_TIMEOUT)
+      await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+
+    self.assertLess(time.monotonic() - released, 0.5, 'Fail at once rather than after the delay.')
+
+  async def test_a_cancelled_disconnect_still_closes_the_session(self):
+    """Cancelled while it waits for a dial still ending, before it reaches the close."""
+    sock = connected_socket()
+    writer = sock._writer
+    sock._listen_task = asyncio.create_task(asyncio.sleep(3600))
+    sock._keep_alive_task = asyncio.create_task(asyncio.sleep(3600))
+    keep_alive = sock._keep_alive_task
+    old = self._a_dial_that_ends_late()
+    held = asyncio.create_task(old.open('192.0.2.1', 1000))
+    await asyncio.wait_for(old.started.wait(), LOOP_TIMEOUT)
+    sock._discard_dial(held)  # an earlier attempt's dial, still ending
+
+    stopping = asyncio.create_task(sock.disconnect())
+    await settle(5)
+    self.assertFalse(stopping.done())
+    stopping.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await stopping
+    await settle(2)
+
+    self.assertIsNone(sock._writer)
+    self.assertTrue(writer.transport.closed)
+    self.assertTrue(keep_alive.cancelled())
+    old.release.set()
+    await settle(5)
+    self.assertTrue(old.writer.transport.closed)
+
+  async def _assert_a_dial_stopped_by_disconnect_is_cancelled_once(self, timed_out):
+    dial = self._a_dial_that_ends_late()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    with patch_timing(CONNECT_TIMEOUT=0.2 if timed_out else 10, DISCONNECT_TIMEOUT=2.0):
+      connecting = asyncio.create_task(sock.connect())
+      await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+      stopping = asyncio.create_task(sock.disconnect())
+      await settle(5)
+      self.assertTrue(dial.cancelled, 'connect() cancels the dial on the stop.')
+      # connect() ends while the dial's cleanup is still under way.
+      if timed_out:
+        with self.assertRaisesRegex(CannotConnectError, 'Timed out'):
+          await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+      else:
+        connecting.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+          await connecting
+      dial.release.set()
+      await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+      await settle(5)
+
+    self.assertTrue(dial.writer.transport.closed, 'Let the cleanup finish and close what it opened.')
+    self.assert_paced(sock)
+
+  async def test_a_caller_cancel_while_a_stopped_dial_ends_does_not_cancel_it_again(self):
+    await self._assert_a_dial_stopped_by_disconnect_is_cancelled_once(timed_out=False)
+
+  async def test_a_timeout_while_a_stopped_dial_ends_does_not_cancel_it_again(self):
+    await self._assert_a_dial_stopped_by_disconnect_is_cancelled_once(timed_out=True)
+
+  async def test_a_dial_that_completes_after_connect_was_cancelled_is_closed(self):
+    """A dial that ignores its cancellation may still open a connection after connect() returned."""
+    dial = self._a_dial_that_ends_late()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = asyncio.create_task(sock.connect())
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    connecting.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await connecting
+    self.assertFalse(dial.writer.transport.closed)
+    # Session state the late close must leave alone, as if a newer session were open.
+    established_at = sock._established_at = time.monotonic() - 1
+    sock._lost = True
+    stopping = asyncio.create_task(sock.disconnect())
+    await settle(5)
+    self.assertFalse(stopping.done(), 'disconnect() waits for a dial still ending.')
+    dial.release.set()
+    await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+    await settle(5)
+
+    self.assertTrue(dial.writer.transport.closed, 'Close the connection nobody took.')
+    self.assert_paced(sock)
+    self.assertEqual(sock._established_at, established_at, 'It was never a session.')
+    self.assertEqual(risco_socket._panel_history[('192.0.2.1', 1000)]['losses'], 0)
+
+  async def test_a_dial_that_completes_as_disconnect_starts_is_closed_once(self):
+    writer = FakeWriter()
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    disconnecting = []
+
+    async def _disconnect():
+      await sock.disconnect()
+      # What the caller of disconnect() sees as it returns.
+      return writer.transport.is_closing(), sock._seconds_until_reconnect(time.monotonic())
+
+    async def _open(host, port):
+      await asyncio.sleep(0)
+      # disconnect() runs before connect() resumes with this result.
+      disconnecting.append(asyncio.create_task(_disconnect()))
+      return asyncio.StreamReader(), writer
+
+    self._dial(_open)
+    with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+    closing, pacing = await asyncio.wait_for(disconnecting[0], LOOP_TIMEOUT)
+
+    self.assertTrue(closing, 'disconnect() returned with the dialled connection still open.')
+    self.assertGreater(pacing, 0, 'disconnect() returned before the close was recorded for pacing.')
+    self.assertTrue(writer.transport.closed)
+    self.assertEqual(writer.wait_closed_calls, 1, 'Close the dialled connection exactly once.')
+    self.assertEqual(writer.written, [], 'Send nothing on it.')
+    self.assertIsNone(sock._writer)
+
+  async def test_cancelling_connect_during_the_dial_cancels_the_dial(self):
+    dial = _HangingDial()
+    self._dial(dial.open)
+    sock = RiscoSocket('192.0.2.1', 1000, '1234')
+    connecting = asyncio.create_task(sock.connect())
+    await asyncio.wait_for(dial.started.wait(), LOOP_TIMEOUT)
+
+    connecting.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await connecting
+
+    self.assertTrue(dial.cancelled)
+    self.assertIsNone(sock._writer)
+    self.assertFalse(sock._connecting)
 
 
 class ConnectWaitTest(unittest.IsolatedAsyncioTestCase):
@@ -1441,6 +1880,77 @@ class ConnectWaitTest(unittest.IsolatedAsyncioTestCase):
 
     self.assertLess(time.monotonic() - started, 0.5)
     self.assertIsNone(sock._writer)
+
+
+class OverlappingCallsTest(unittest.IsolatedAsyncioTestCase):
+  """connect() and disconnect() called while another call is still running."""
+
+  async def asyncSetUp(self):
+    reset_reconnect_history()
+    self.addCleanup(reset_reconnect_history)
+    self.panel = await ScriptedPanel().start()
+    self.addAsyncCleanup(self.panel.stop)
+
+  def _eager_tasks(self):
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    self.addCleanup(loop.set_task_factory, None)
+
+  async def _assert_a_disconnect_during_the_reconnect_close_wins(self, delay):
+    sock = RiscoSocket('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(sock.disconnect)
+    # Long command and close timeouts: only the release may end the held DCN.
+    with patch_timing(RECONNECT_DELAY=delay, COMMAND_TIMEOUT=2.0, DISCONNECT_TIMEOUT=2.0):
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+      release = asyncio.Event()
+      self.panel.hold_before['DCN'] = release  # hold the old session's close open
+      reconnect = asyncio.create_task(sock.connect())
+      self.addCleanup(reconnect.cancel)
+      await _until(lambda: 'DCN' in self.panel.sessions[0].received, 'DCN')
+      stopping = asyncio.create_task(sock.disconnect())
+      await settle(5)
+      self.assertFalse(stopping.done(), 'disconnect() waits for the close under way.')
+      release.set()
+      await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+
+      with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+        await asyncio.wait_for(reconnect, LOOP_TIMEOUT)
+      await asyncio.sleep(0.2)
+
+    self.assertIsNone(sock._writer)
+    self.assertEqual(self.panel.open_sessions, [], 'Leave no session open after disconnect() returned.')
+
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins(self):
+    """connect() closes a still-open session itself; a disconnect() meanwhile must not be undone."""
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0.05)
+
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins_without_a_delay(self):
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins_with_eager_tasks(self):
+    self._eager_tasks()
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0.05)
+
+  async def test_a_connect_while_another_runs_is_refused(self):
+    """Two attempts would dial two sessions and overwrite each other's handshake."""
+    sock = RiscoSocket('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(sock.disconnect)
+    with patch_timing():
+      first = asyncio.create_task(sock.connect())
+      second = asyncio.create_task(sock.connect())
+      with self.assertRaisesRegex(CannotConnectError, 'connect\\(\\) is already running'):
+        await asyncio.wait_for(second, LOOP_TIMEOUT)
+      await asyncio.wait_for(first, LOOP_TIMEOUT)
+
+      self.assertTrue(sock.connected)
+      self.assertEqual(len(self.panel.sessions), 1, 'Dial only for the first connect().')
+      # Once it has finished, connecting again works.
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+
+    self.assertTrue(sock.connected)
+    self.assertEqual(len(self.panel.sessions), 2)
+    self.assertEqual(len(self.panel.open_sessions), 1)
 
 
 def _production_timing():
