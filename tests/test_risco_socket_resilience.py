@@ -1257,6 +1257,7 @@ class ConnectTest(unittest.IsolatedAsyncioTestCase):
     await asyncio.wait_for(closed.wait(), LOOP_TIMEOUT)
     self.assertIsNone(sock._writer)
     self.assertIsNone(sock._listen_task)
+    self.assertFalse(sock._connecting, 'A cancelled connect() must not refuse the next one.')
 
   async def test_a_failed_handshake_closes_and_raises_cannot_connect(self):
     closed = asyncio.Event()
@@ -1501,6 +1502,26 @@ class OverlappingCallsTest(unittest.IsolatedAsyncioTestCase):
   async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins_with_eager_tasks(self):
     self._eager_tasks()
     await self._assert_a_disconnect_during_the_reconnect_close_wins(0.05)
+
+  async def test_a_connect_while_another_runs_is_refused(self):
+    """Two attempts would dial two sessions and overwrite each other's handshake."""
+    sock = RiscoSocket('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(sock.disconnect)
+    with patch_timing():
+      first = asyncio.create_task(sock.connect())
+      second = asyncio.create_task(sock.connect())
+      with self.assertRaisesRegex(CannotConnectError, 'connect\\(\\) is already running'):
+        await asyncio.wait_for(second, LOOP_TIMEOUT)
+      await asyncio.wait_for(first, LOOP_TIMEOUT)
+
+      self.assertTrue(sock.connected)
+      self.assertEqual(len(self.panel.sessions), 1, 'Dial only for the first connect().')
+      # Once it has finished, connecting again works.
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+
+    self.assertTrue(sock.connected)
+    self.assertEqual(len(self.panel.sessions), 2)
+    self.assertEqual(len(self.panel.open_sessions), 1)
 
 
 def _production_timing():

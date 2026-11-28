@@ -67,6 +67,7 @@ class RiscoSocket:
     # Only unexpected session loss grows back-off.
     self._lost = False
     self._closing = False
+    self._connecting = False
     # Library-initiated close reason: failed keep-alive or unreadable frames.
     self._close_reason = None
     self._disconnect_lock = asyncio.Lock()
@@ -91,6 +92,17 @@ class RiscoSocket:
     return self._closing
 
   async def connect(self):
+    if self._connecting:
+      # Two attempts would dial two sessions and overwrite each other's state.
+      raise CannotConnectError('connect() is already running')
+    self._connecting = True
+    try:
+      await self._connect()
+    finally:
+      # Cleared only after the attempt's own cleanup, cancellation included.
+      self._connecting = False
+
+  async def _connect(self):
     # Finish any old disconnect, then close any remaining session.
     async with self._disconnect_lock:
       pass
