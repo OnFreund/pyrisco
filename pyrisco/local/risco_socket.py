@@ -68,6 +68,11 @@ class RiscoSocket:
     self._lost = False
     self._closing = False
     self._connecting = False
+    # The running connect()'s TCP dial, and the future disconnect() sets to stop it.
+    self._dial = None
+    self._stop_dial = None
+    # Dials connect() stopped waiting for that have not ended yet; held so they can be waited for.
+    self._retiring = set()
     # Library-initiated close reason: failed keep-alive or unreadable frames.
     self._close_reason = None
     self._disconnect_lock = asyncio.Lock()
@@ -113,18 +118,43 @@ class RiscoSocket:
     self._closing = False
     self._close_reason = None
     try:
+      # An earlier attempt's dial may still be ending: its close counts for pacing,
+      # and the panel must never see two connections from this socket.
+      ending = await self._wait_for_dials(self._retiring)
+      self._check_not_disconnected()
+      if ending:
+        raise CannotConnectError('An earlier connection attempt is still ending')
       await self._wait_before_reconnect()
       self._check_not_disconnected()
       self._semaphore = asyncio.Semaphore(self._max_concurrency)
       self._futures = [None] * MAX_CMD_ID
       self._held = [False] * MAX_CMD_ID
       self._received = 0
+      # The dial runs in its own task; disconnect() asks this attempt to stop it.
+      dial = self._dial = asyncio.create_task(asyncio.open_connection(self._host, self._port))
+      stop = self._stop_dial = asyncio.get_running_loop().create_future()
+      adopted = cancelled = False
       try:
         async with asyncio.timeout(CONNECT_TIMEOUT):
-          self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
+          # wait() cancels neither, so any CancelledError here is our caller's.
+          await asyncio.wait({dial, stop}, return_when=asyncio.FIRST_COMPLETED)
+          if not dial.done():
+            # disconnect() came first: stop the dial and let it end.
+            dial.cancel()
+            cancelled = True
+            await asyncio.wait({dial})
+            raise CannotConnectError('disconnect() was called while connecting')
+        self._reader, self._writer = dial.result()
+        adopted = True
       except TimeoutError:
         raise CannotConnectError(
             f'Timed out connecting to {self._host}:{self._port}') from None
+      finally:
+        self._dial = self._stop_dial = None
+        if not adopted:
+          # Never cancel twice: a second cancel could cut short the dial's own cleanup.
+          self._discard_dial(dial, cancel=not cancelled)
+      # A dial that completed as disconnect() began: close it here, unused.
       self._check_not_disconnected()
       if self._communication_delay > 0:
         await asyncio.sleep(self._communication_delay)
@@ -172,6 +202,16 @@ class RiscoSocket:
     async with self._disconnect_lock:
       # Stop pending connects and treat EOF after DCN as deliberate.
       self._closing = True
+      dial, stop = self._dial, self._stop_dial
+      if stop is not None and not stop.done():
+        stop.set_result(None)
+      try:
+        # connect() cancels its dial; wait for it, and any still ending, up to DISCONNECT_TIMEOUT.
+        await self._wait_for_dials(self._retiring | ({dial} if dial is not None else set()))
+      except asyncio.CancelledError:
+        # Cancelled before the close below: close synchronously instead.
+        self._teardown()
+        raise
       if self._writer is None:
         return
       try:
@@ -394,7 +434,41 @@ class RiscoSocket:
     self._queue = None
     return writer
 
-  def _record_close(self, now=None):
+  def _discard_dial(self, dial, cancel=True):
+    """Close and record a connection a dial opened that no session took, now or once it ends."""
+    if dial.done():
+      self._dial_ended(dial)
+      return
+    if cancel:
+      dial.cancel()
+    self._retiring.add(dial)
+    dial.add_done_callback(self._dial_ended)
+
+  def _dial_ended(self, dial):
+    self._retiring.discard(dial)
+    if not dial.cancelled() and dial.exception() is None:
+      _shut_transport(dial.result()[1])
+      # It reached the panel, so it paces the next connect(); it was never a session.
+      self._record_close(session=False)
+
+  async def _wait_for_dials(self, dials):
+    """Wait up to DISCONNECT_TIMEOUT for dials to end and be let go of; return those still ending."""
+    dials = set(dials)
+
+    def ending():
+      # Done is not enough: what a dial opened is closed and recorded only once
+      # connect() or the discard callback has let go of it.
+      return {d for d in dials if not d.done() or d in self._retiring or d is self._dial}
+
+    try:
+      async with asyncio.timeout(DISCONNECT_TIMEOUT):
+        while ending():
+          await asyncio.wait(ending())
+    except TimeoutError:
+      pass
+    return ending()
+
+  def _record_close(self, now=None, session=True):
     history = _panel_history.setdefault(
         (self._host, self._port), {'closed_at': None, 'losses': 0})
     if now is None:
@@ -403,7 +477,7 @@ class RiscoSocket:
     if previous is not None and now - previous > 2 * (STABLE_SESSION + MAX_RECONNECT_DELAY):
       # A long quiet spell resets back-off.
       history['losses'] = 0
-    if self._established_at is not None:
+    if session and self._established_at is not None:
       if now - self._established_at >= STABLE_SESSION:
         history['losses'] = 0
       elif self._lost:
