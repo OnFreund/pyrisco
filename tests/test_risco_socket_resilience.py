@@ -28,6 +28,15 @@ from pyrisco.common import CannotConnectError, OperationError
 from pyrisco.local.risco_crypt import RiscoCrypt
 from pyrisco.local import risco_socket
 from pyrisco.local.risco_socket import MAX_CMD_ID, RiscoSocket
+from scripted_panel import ScriptedPanel
+
+
+async def _until(predicate, what):
+  deadline = time.monotonic() + LOOP_TIMEOUT
+  while not predicate():
+    if time.monotonic() > deadline:
+      raise AssertionError(f'timed out waiting for {what}')
+    await asyncio.sleep(0.01)
 
 
 class CommandIdTest(unittest.IsolatedAsyncioTestCase):
@@ -1441,6 +1450,57 @@ class ConnectWaitTest(unittest.IsolatedAsyncioTestCase):
 
     self.assertLess(time.monotonic() - started, 0.5)
     self.assertIsNone(sock._writer)
+
+
+class OverlappingCallsTest(unittest.IsolatedAsyncioTestCase):
+  """connect() and disconnect() called while another call is still running."""
+
+  async def asyncSetUp(self):
+    reset_reconnect_history()
+    self.addCleanup(reset_reconnect_history)
+    self.panel = await ScriptedPanel().start()
+    self.addAsyncCleanup(self.panel.stop)
+
+  def _eager_tasks(self):
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    self.addCleanup(loop.set_task_factory, None)
+
+  async def _assert_a_disconnect_during_the_reconnect_close_wins(self, delay):
+    sock = RiscoSocket('127.0.0.1', self.panel.port, '1234')
+    self.addAsyncCleanup(sock.disconnect)
+    # Long command and close timeouts: only the release may end the held DCN.
+    with patch_timing(RECONNECT_DELAY=delay, COMMAND_TIMEOUT=2.0, DISCONNECT_TIMEOUT=2.0):
+      await asyncio.wait_for(sock.connect(), LOOP_TIMEOUT)
+      release = asyncio.Event()
+      self.panel.hold_before['DCN'] = release  # hold the old session's close open
+      reconnect = asyncio.create_task(sock.connect())
+      self.addCleanup(reconnect.cancel)
+      await _until(lambda: 'DCN' in self.panel.sessions[0].received, 'DCN')
+      stopping = asyncio.create_task(sock.disconnect())
+      await settle(5)
+      self.assertFalse(stopping.done(), 'disconnect() waits for the close under way.')
+      release.set()
+      await asyncio.wait_for(stopping, LOOP_TIMEOUT)
+
+      with self.assertRaisesRegex(CannotConnectError, 'disconnect\\(\\) was called while connecting'):
+        await asyncio.wait_for(reconnect, LOOP_TIMEOUT)
+      await asyncio.sleep(0.2)
+
+    self.assertIsNone(sock._writer)
+    self.assertEqual(self.panel.open_sessions, [], 'Leave no session open after disconnect() returned.')
+
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins(self):
+    """connect() closes a still-open session itself; a disconnect() meanwhile must not be undone."""
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0.05)
+
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins_without_a_delay(self):
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0)
+
+  @unittest.skipUnless(hasattr(asyncio, 'eager_task_factory'), 'eager tasks need Python 3.12')
+  async def test_a_disconnect_while_a_reconnect_closes_the_old_session_wins_with_eager_tasks(self):
+    self._eager_tasks()
+    await self._assert_a_disconnect_during_the_reconnect_close_wins(0.05)
 
 
 def _production_timing():

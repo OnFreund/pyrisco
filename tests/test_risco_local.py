@@ -44,6 +44,26 @@ def _collect(sink):
   return _handler
 
 
+class _SessionQueueSocket(FakeSocket):
+  """A FakeSocket with one queue per session, as RiscoSocket has.
+
+  Set `hold_close` to an asyncio.Event to keep disconnect() waiting until it is set.
+  """
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.hold_close = None
+
+  async def connect(self):
+    await super().connect()
+    self.queue = asyncio.Queue()
+
+  async def disconnect(self):
+    if self.hold_close is not None:
+      await self.hold_close.wait()
+    await super().disconnect()
+
+
 class ConnectCleanupTest(unittest.IsolatedAsyncioTestCase):
   """connect() must not leave a session behind when init fails."""
 
@@ -589,6 +609,44 @@ class SetupErrorTest(unittest.IsolatedAsyncioTestCase):
 
     self.assertTrue(panel.zones[1].triggered)
 
+  async def test_a_stale_push_for_the_old_session_does_not_change_the_kept_snapshot(self):
+    """disconnect() is still closing the old session while a connect() starts and fails.
+
+    That connect() forgets the old status reads, so only the old listener
+    standing down keeps an older push from reaching the kept zone.
+    """
+    fake = _SessionQueueSocket(
+        panel_responses(zones=(1,)), failures={'PNLCNF': [None, CommunicationError('lost')]})
+    fake.reply_seqs['ZSTT*1?'] = 10
+    panel = _local(fake)
+    zone_events = []
+
+    async def _zone(zone_id, zone):
+      zone_events.append((zone_id, zone.triggered))
+
+    panel.add_zone_handler(_zone)
+    panel.add_error_handler(_collect([]))
+    await asyncio.wait_for(panel.connect(), LOOP_TIMEOUT)
+    zone = panel.zones[1]
+    old_queue = fake.queue
+    fake.hold_close = asyncio.Event()
+    disconnecting = asyncio.create_task(panel.disconnect())
+    await asyncio.sleep(0)  # disconnect() now waits on the held close
+    connecting = asyncio.create_task(panel.connect())
+    await settle()  # connect() has failed discovery and waits on the held close too
+    old_queue.put_nowait(_push('ZSTT1=O---', seq=5))  # older than the status read at connect
+    await settle()  # the old listener runs if it is still alive
+    fake.hold_close.set()
+    fake.hold_close = None
+    await asyncio.wait_for(disconnecting, LOOP_TIMEOUT)
+    with self.assertRaises(CannotConnectError):
+      await asyncio.wait_for(connecting, LOOP_TIMEOUT)
+    await settle()
+
+    self.assertIs(panel.zones[1], zone)
+    self.assertFalse(zone.triggered, 'A stale push changed the kept zone.')
+    self.assertEqual(zone_events, [])
+
   async def test_a_connection_loss_during_setup_is_not_dropped(self):
     fake = FakeSocket(panel_responses(zones=(1,)))
     fake.queue.put_nowait(ConnectionResetError())
@@ -740,6 +798,20 @@ class UndeliveredErrorTest(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(len(errors), 1)
     self.assertEqual(len(panel._undelivered), 0)
+
+  async def test_an_error_goes_to_the_handlers_registered_when_it_is_delivered(self):
+    """Delivery runs in its own task, which looks the handlers up when it runs."""
+    panel = _local(FakeSocket())
+    removed, added = [], []
+    remove = panel.add_error_handler(_collect(removed))
+    error = OperationError('N05')
+    panel._error(error)
+    remove()
+    panel.add_error_handler(_collect(added))
+    await settle()
+
+    self.assertEqual(removed, [])
+    self.assertEqual(added, [error])
 
   async def test_retained_errors_reach_only_the_handler_that_was_added(self):
     """A handler registered later did not miss the retained errors.
