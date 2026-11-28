@@ -21,7 +21,8 @@ class Alarm:
   def partitions(self):
     """Alarm partitions."""
     if self._partitions is None:
-      self._partitions = {p["id"]: Partition(self._api, p) for p in self._raw["partitions"]}
+      # Partition-less systems (e.g. Electronics Line iConnect) report null partitions
+      self._partitions = {p["id"]: Partition(self._api, p) for p in self._raw["partitions"] or []}
     return self._partitions
 
   @property
